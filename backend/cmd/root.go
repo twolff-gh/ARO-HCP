@@ -29,6 +29,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/Azure/ARO-HCP/backend/pkg/app"
+	azureclient "github.com/Azure/ARO-HCP/backend/pkg/azure/client"
 	"github.com/Azure/ARO-HCP/internal/signal"
 	"github.com/Azure/ARO-HCP/internal/tracing"
 	"github.com/Azure/ARO-HCP/internal/utils"
@@ -329,6 +330,29 @@ func (f *BackendRootCmdFlags) ToBackendOptions(ctx context.Context, cmd *cobra.C
 	}
 	smiClientBuilder := app.NewServiceManagedIdentityClientBuilder(fpaMIDataplaneClientBuilder, azureConfig)
 
+	var checkAccessV2ClientBuilder azureclient.CheckAccessV2ClientBuilder
+	if !f.InsecureIgnoreUserAzureManagedIdentitiesThatNeedManagedIdentitiesDataplaneAvailableAndUseMock {
+		// In ARO-HCP environments where we have a real FPA, we use the FPA identity to create the Check Access V2 client
+		checkAccessV2ClientBuilder = azureclient.NewRealFPAIdentityCheckAccessV2ClientBuilder(
+			fpaTokenCredRetriever, azureConfig.CloudEnvironment.CheckAccessV2Endpoint(f.AzureLocation),
+			azureConfig.CloudEnvironment.CheckAccessV2Scope(), azureConfig.CloudEnvironment.AZCoreClientOptions(),
+		)
+	} else {
+		// In ARO-HCP environments where we don't have a real FPA, we use the Azure Permissions Manager identity to create the Check Access V2 client
+		azureARMPermissionsManagerIdentityTokenCredentialRetriever, err := newInsecureAzurePermissionsManagerIdentityTokenCredentialRetriever(
+			ctx, f.InsecureAzureARMPermissionsManagerIdentityTenantID, f.InsecureAzureARMPermissionsManagerIdentityClientID,
+			f.InsecureAzureARMPermissionsManagerIdentityCertificateBundlePath, azureConfig,
+		)
+		if err != nil {
+			return nil, utils.TrackError(fmt.Errorf("failed to create Azure Permissions Manager identity token credential retriever: %w", err))
+		}
+		checkAccessV2ClientBuilder = azureclient.NewInsecureARMPermissionsManagerIdentityCheckAccessV2ClientBuilder(
+			azureARMPermissionsManagerIdentityTokenCredentialRetriever,
+			azureConfig.CloudEnvironment.CheckAccessV2Endpoint(f.AzureLocation),
+			azureConfig.CloudEnvironment.CheckAccessV2Scope(), azureConfig.CloudEnvironment.AZCoreClientOptions(),
+		)
+	}
+
 	cosmosDBClient, err := app.NewCosmosDBClient(
 		ctx, f.AzureCosmosDBURL, f.AzureCosmosDBName,
 		*azureConfig.CloudEnvironment.AZCoreClientOptions(),
@@ -358,6 +382,7 @@ func (f *BackendRootCmdFlags) ToBackendOptions(ctx context.Context, cmd *cobra.C
 		ExitOnPanic:                        f.ExitOnPanic,
 		FPAMIDataplaneClientBuilder:        fpaMIDataplaneClientBuilder,
 		SMIClientBuilder:                   smiClientBuilder,
+		CheckAccessV2ClientBuilder:         checkAccessV2ClientBuilder,
 	}
 
 	return backendOptions, nil
