@@ -71,6 +71,13 @@ arobit:
       digest: sha256:2ae5282c99fa8c82bb394b23dbcb9ea0fa553e4ec3cce9e39d110f44b6282062
       registry: mcr.microsoft.com
       repository: geneva/distroless/mdsd
+auditLogsEventHub:
+  authRuleName: SendRule
+  kustoConsumerGroupName: AuditLogsToKusto
+  kustoDataConnectionName: perf-westus3-auditlogs
+  name: aks-auditlogs
+  namespace: hcp-perf-westus3-auditlogs-eh
+  rg: westus3-shared-resources
 automationDryRun: false
 azureGeoShortId: us
 azureRegionAvailabilityZoneCount: 4
@@ -378,11 +385,6 @@ kubeEvents:
     repository: shared/kube-events
 kusto:
   adminGroups: ""
-  auditLogsEventHub:
-    authRuleName: SendRule
-    kustoConsumerGroupName: AuditLogsToKusto
-    name: aks-auditlogs
-    namespace: hcp-dev-us-eh
   autoScaleMax: 10
   autoScaleMin: 2
   enableAutoScale: true
@@ -873,6 +875,8 @@ svc:
       Microsoft.DbForPostgreSQL:
         poll: true
       Microsoft.Insights:
+        poll: true
+      Microsoft.Kusto:
         poll: true
       Microsoft.Network:
         features:
