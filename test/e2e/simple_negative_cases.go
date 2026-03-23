@@ -19,15 +19,17 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/blang/semver/v4"
+
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
 
+	"github.com/Azure/ARO-HCP/internal/api"
 	hcpsdk20240610preview "github.com/Azure/ARO-HCP/test/sdk/resourcemanager/redhatopenshifthcp/armredhatopenshifthcp"
 	"github.com/Azure/ARO-HCP/test/util/framework"
 	"github.com/Azure/ARO-HCP/test/util/labels"
@@ -168,27 +170,17 @@ var _ = Describe("Customer", func() {
 
 			// TEST CASE: ARO-23182
 			By("attempting to update nodepool version to higher than cluster version")
-			clusterVersion := clusterParams.OpenshiftVersionId
-			parts := strings.Split(clusterVersion, ".")
-			minor, _ := strconv.Atoi(parts[1])
-			invalidNodePoolVersion := fmt.Sprintf("%s.%d.0", parts[0], minor+1) // +1 y-stream, z set to 0
-			versionUpdate := hcpsdk20240610preview.NodePoolUpdate{
-				Properties: &hcpsdk20240610preview.NodePoolPropertiesUpdate{
-					Version: &hcpsdk20240610preview.NodePoolVersionProfile{
-						ID: &invalidNodePoolVersion,
-					},
-				},
-			}
+			clusterVersion := api.Must(semver.ParseTolerant(clusterParams.OpenshiftVersionId))
+			invalidNodePoolVersion := fmt.Sprintf("%d.%d.0", clusterVersion.Major, clusterVersion.Minor+1) // +1 y-stream, z set to 0
 
-			_, err = framework.UpdateNodePoolAndWait(ctx,
-				tc.Get20240610ClientFactoryOrDie(ctx).NewNodePoolsClient(),
-				*resourceGroup.Name,
-				clusterParams.ClusterName,
-				nodePoolParams.NodePoolName,
-				versionUpdate,
-				10*time.Minute,
-			)
-			checkExpectedError(&errs, "invalid node pool version update", err, "node pool version cannot exceed control plane")
+			npForVersionUpdate, err := nodePoolClient.Get(ctx, *resourceGroup.Name, clusterParams.ClusterName, nodePoolParams.NodePoolName, nil)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("failed to get nodepool for version update: %w", err))
+			} else {
+				npForVersionUpdate.Properties.Version.ID = &invalidNodePoolVersion
+				_, err = nodePoolClient.BeginCreateOrUpdate(ctx, *resourceGroup.Name, clusterParams.ClusterName, nodePoolParams.NodePoolName, npForVersionUpdate.NodePool, nil)
+				checkExpectedError(&errs, "invalid node pool version update", err, "node pool version cannot exceed control plane")
+			}
 
 			// TEST CASE: ARO-24877
 			By("attempting to update immutable platform profile fields")
