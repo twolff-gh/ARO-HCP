@@ -200,6 +200,9 @@ var _ = Describe("Customer", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			By("verifying nodes are ready, updated to expected version, and release images differ from pre-upgrade")
+			// Node pool upgrades typically finish in on the order of a dozen minutes; the Eventually timeout below
+			// adds buffer on the safe side for this initial E2E. TODO: tighten to align with the node pool upgrade
+			// SLO once determined.
 			Eventually(func() error {
 				return verifiers.VerifyNodePoolUpgrade(nodePoolDesiredVersion, customerNodePoolName, previousReleaseImages).Verify(ctx, adminRESTConfig)
 			}, 30*time.Minute, 2*time.Minute).Should(Succeed())
