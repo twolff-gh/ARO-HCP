@@ -121,3 +121,9 @@ data:
           - name: 'azure-file-csi-driver-node-sa'
             namespace: 'openshift-cluster-csi-drivers'
         optional: false
+    serviceManagedIdentity:
+      roleDefinitions:
+      {{- range $azureOperatorsMI.serviceManagedIdentity.roleDefinitions }}
+        - resourceId: '/providers/Microsoft.Authorization/roleDefinitions/{{ .id }}'
+          name: '{{ .name }}'
+      {{- end }}
