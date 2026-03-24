@@ -45,16 +45,17 @@ func GetInstallVersionForZStreamUpgrade(ctx context.Context, channelGroup string
 	}
 
 	nextMinorStr := fmt.Sprintf("%d.%d", configuredVersion.Major, configuredVersion.Minor+1)
-	latestInNextMinor, err := GetLatestVersionInMinor(ctx, channelGroup, nextMinorStr)
+	maxVersion, err := GetLatestVersionInMinor(ctx, channelGroup, nextMinorStr)
 	if err != nil {
-		if cincinatti.IsCincinnatiVersionNotFoundError(err) {
-			return candidates[0].String(), false, nil
+		if !cincinatti.IsCincinnatiVersionNotFoundError(err) {
+			return "", false, err
 		}
-		return "", false, err
+		// we don't have the next minor, use the max version in the current minor
+		maxVersion = candidates[0].String()
 	}
 
 	for i := 0; i < len(candidates)-1; i++ {
-		upgradeTargets, err := GetUpgradeCandidatesInMaxMinorFromCincinnati(ctx, channelGroup, latestInNextMinor, candidates[i].String())
+		upgradeTargets, err := GetUpgradeCandidatesInMaxMinorFromCincinnati(ctx, channelGroup, maxVersion, candidates[i].String())
 		if err != nil {
 			return "", false, err
 		}
