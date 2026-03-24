@@ -133,22 +133,29 @@ resource msiCustomRole 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
     permissions: [
       {
         actions: [
-          'Microsoft.Network/virtualNetworks/read'
-          'Microsoft.Network/virtualNetworks/join/action'
-          'Microsoft.Network/virtualNetworks/subnets/read'
-          'Microsoft.Network/virtualNetworks/subnets/write'
-          'Microsoft.Network/virtualNetworks/subnets/join/action'
-          'Microsoft.Network/routeTables/read'
-          'Microsoft.Network/routeTables/join/action'
-          'Microsoft.Network/natGateways/join/action'
-          'Microsoft.Network/natGateways/read'
-          'Microsoft.Network/networkSecurityGroups/read'
-          'Microsoft.Network/networkSecurityGroups/write'
-          'Microsoft.Network/networkSecurityGroups/join/action'
-          'Microsoft.ManagedIdentity/userAssignedIdentities/read'
+          'Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials/delete'
           'Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials/read'
           'Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials/write'
-          'Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials/delete'
+          'Microsoft.ManagedIdentity/userAssignedIdentities/read'
+          'Microsoft.Network/loadBalancers/backendAddressPools/read' // read backend address pools of LB to check if the backend address pool already exists
+          'Microsoft.Network/loadBalancers/backendAddressPools/write' // write backend address pools to LB
+          'Microsoft.Network/loadBalancers/read' // to check if LB exists or not before writing to it
+          'Microsoft.Network/loadBalancers/write' // create LB if it doesn't exist
+          'Microsoft.Network/natGateways/join/action' // subnet/write needs /join/action on nat gateway if present in request
+          'Microsoft.Network/natGateways/read'
+          'Microsoft.Network/networkSecurityGroups/join/action' // subnet/write needs /join/action on NSG if present in request
+          'Microsoft.Network/networkSecurityGroups/read' // validate NSG 
+          'Microsoft.Network/networkSecurityGroups/write'
+          'Microsoft.Network/privateDnsZones/virtualNetworkLinks/read' // read existing links between private DNS zone and virtual network
+          'Microsoft.Network/privateDnsZones/virtualNetworkLinks/write' // attach private DNS zone to virtual network
+          'Microsoft.Network/routeTables/join/action' // subnet/write needs /join/action on nat route table if present in request
+          'Microsoft.Network/routeTables/read'
+          'Microsoft.Network/virtualNetworks/join/action' // attach private DNS zone
+          'Microsoft.Network/virtualNetworks/joinLoadBalancer/action' // add private IP addresses to LB backend
+          'Microsoft.Network/virtualNetworks/read' // validate CIDR & existance
+          'Microsoft.Network/virtualNetworks/subnets/join/action' // create private load balancer and join to subnet
+          'Microsoft.Network/virtualNetworks/subnets/read' // validate CIDR & existance
+          'Microsoft.Network/virtualNetworks/subnets/write' // attach the NSG to subnet
         ]
         notActions: []
       }

@@ -225,7 +225,7 @@ azureOperatorsMI:
   # because we have a mock MSI identity, these roles do nothing from a permissions perspective
   # for control plane identities.  They still work as intended on the managed resource group
   # for data plane identities.  We should consider revisiting the usage of a mock MSI identity
-  # as it indrectly makes us think these permissions apply uniformly across dataplane and control
+  # as it indirectly makes us think these permissions apply uniformly across dataplane and control
   # plane identities in DEV and INT.
   # We continue to keep a "dev" and "public" reference to allow for testing new permissions added
   # on data plane operators without having to wait for a built-in role update.
