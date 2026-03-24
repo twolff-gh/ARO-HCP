@@ -18,8 +18,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -60,14 +58,6 @@ var _ = Describe("Customer", func() {
 			)
 
 			tc := framework.NewTestContext()
-
-			// IDMS feature is not yet rolled out to stage/prod environments.
-			// Time bomb: after 2026-03-30, remove this guard and expect the feature everywhere.
-			suiteName := os.Getenv("ARO_HCP_SUITE_NAME")
-			isStageProd := strings.HasPrefix(suiteName, "stage/") || strings.HasPrefix(suiteName, "prod/")
-			if isStageProd && time.Now().Before(time.Date(2026, 3, 30, 0, 0, 0, 0, time.UTC)) {
-				Skip("IDMS feature not yet rolled out to this environment; skipping until 2026-03-30")
-			}
 
 			if tc.UsePooledIdentities() {
 				err := tc.AssignIdentityContainers(ctx, 1, 60*time.Second)
