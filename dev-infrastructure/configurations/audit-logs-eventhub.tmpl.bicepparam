@@ -5,4 +5,5 @@ param auditLogsDiagnosticSettingsRuleName = '{{ .auditLogsEventHub.authRuleName 
 param auditLogsEventHubName = '{{ .auditLogsEventHub.name }}'
 param auditLogsEventHubNamespaceName = '{{ .auditLogsEventHub.namespace }}'
 param manageInstance = {{ .kusto.manageInstance }}
+param eventhubEnabled = {{ .auditLogsEventHub.enabled }}
 param kustoPrincipalId = '__kustoPrincipalId__'

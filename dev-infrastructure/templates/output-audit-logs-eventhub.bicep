@@ -1,5 +1,8 @@
-@description('Toggle if instance is expected to exist')
+@description('Toggle if kusto instance is expected to exist')
 param kustoEnabled bool
+
+@description('Toggle if eventhub instance is expected to exist')
+param eventhubEnabled bool
 
 @description('Event Hub namespace for AKS audit logs')
 param auditLogsEventHubNamespaceName string
@@ -7,7 +10,7 @@ param auditLogsEventHubNamespaceName string
 @description('Name of the event hub authorization rule for AKS audit logs')
 param auditLogsEventHubAuthRuleName string
 
-resource auditLogsEventHubNamespace 'Microsoft.EventHub/namespaces@2024-01-01' existing = if (kustoEnabled) {
+resource auditLogsEventHubNamespace 'Microsoft.EventHub/namespaces@2024-01-01' existing = if (kustoEnabled && eventhubEnabled) {
   name: auditLogsEventHubNamespaceName
 
   resource diagnosticSettingsAuthRule 'authorizationRules@2024-01-01' existing = {
@@ -15,6 +18,6 @@ resource auditLogsEventHubNamespace 'Microsoft.EventHub/namespaces@2024-01-01' e
   }
 }
 
-output auditLogsEventHubAuthRuleId string = kustoEnabled
+output auditLogsEventHubAuthRuleId string = kustoEnabled && eventhubEnabled
   ? auditLogsEventHubNamespace::diagnosticSettingsAuthRule.id
   : ''

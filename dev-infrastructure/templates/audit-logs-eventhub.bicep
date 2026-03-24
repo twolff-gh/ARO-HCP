@@ -16,8 +16,11 @@ param kustoPrincipalId string
 @description('When true, deploy managed audit logs Event Hub resources')
 param manageInstance bool = true
 
+@description('Whether the audit logs Event Hub is enabled in this region')
+param eventhubEnabled bool
+
 // Event Hub namespace for AKS audit logs
-resource eventHubNamespace 'Microsoft.EventHub/namespaces@2024-01-01' = if (manageInstance) {
+resource eventHubNamespace 'Microsoft.EventHub/namespaces@2024-01-01' = if (manageInstance && eventhubEnabled) {
   name: auditLogsEventHubNamespaceName
   location: resourceGroup().location
   sku: {
@@ -65,7 +68,7 @@ resource eventHubNamespace 'Microsoft.EventHub/namespaces@2024-01-01' = if (mana
 }
 
 var eventHubDataReceiverRole = 'a638d3c7-ab3a-418d-83e6-5f17a39d4fde'
-resource eventHubDataReceiverRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (manageInstance && kustoPrincipalId != '') {
+resource eventHubDataReceiverRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (manageInstance && eventhubEnabled && kustoPrincipalId != '') {
   scope: eventHubNamespace::eventHub
   name: guid(eventHubNamespace::eventHub.id, kustoPrincipalId, eventHubDataReceiverRole)
   properties: {
@@ -75,5 +78,7 @@ resource eventHubDataReceiverRoleAssignment 'Microsoft.Authorization/roleAssignm
   }
 }
 
-output auditLogsEventHubId string = manageInstance ? eventHubNamespace::eventHub.id : ''
-output auditLogsEventHubAuthRuleId string = manageInstance ? eventHubNamespace::diagnosticSettingsAuthRule.id : ''
+output auditLogsEventHubId string = manageInstance && eventhubEnabled ? eventHubNamespace::eventHub.id : ''
+output auditLogsEventHubAuthRuleId string = manageInstance && eventhubEnabled
+  ? eventHubNamespace::diagnosticSettingsAuthRule.id
+  : ''
