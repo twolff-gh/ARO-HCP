@@ -174,13 +174,11 @@ var _ = Describe("Customer", func() {
 			invalidNodePoolVersion := fmt.Sprintf("%d.%d.0", clusterVersion.Major, clusterVersion.Minor+1) // +1 y-stream, z set to 0
 
 			npForVersionUpdate, err := nodePoolClient.Get(ctx, *resourceGroup.Name, clusterParams.ClusterName, nodePoolParams.NodePoolName, nil)
-			if err != nil {
-				errs = append(errs, fmt.Errorf("failed to get nodepool for version update: %w", err))
-			} else {
-				npForVersionUpdate.Properties.Version.ID = &invalidNodePoolVersion
+			Expect(err).ToNot(HaveOccurred()....)
+			npForVersionUpdate.Properties.Version.ID = &invalidNodePoolVersion
 				_, err = nodePoolClient.BeginCreateOrUpdate(ctx, *resourceGroup.Name, clusterParams.ClusterName, nodePoolParams.NodePoolName, npForVersionUpdate.NodePool, nil)
-				checkExpectedError(&errs, "invalid node pool version update", err, "node pool version cannot exceed control plane")
-			}
+				Expect(err).ToNot(HaveOccurred()...)
+}
 
 			// TEST CASE: ARO-24877
 			By("attempting to update immutable platform profile fields")
