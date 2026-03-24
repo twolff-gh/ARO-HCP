@@ -1,12 +1,12 @@
 acm:
   mce:
     bundle:
-      digest: sha256:9ada289f06b9af65e2957f1eb5aa97c1add2ab0a85da11b27710b63029da1527
+      digest: sha256:ba98af6c60952b7e8b4e682c16c31c560e342a090a1607adc47cd31d630905f3
       registry: quay.io
       repository: redhat-user-workloads/crt-redhat-acm-tenant/mce-operator-bundle-mce-210
   operator:
     bundle:
-      digest: sha256:12594107ba681cc0ac148c44d71175d1c7942d85ff0c556e3a6bd5a455563932
+      digest: sha256:57efa3ac2136e8b32fde890c8010c3dbfb62611663797e17e90609f0ddc407ba
       registry: quay.io
       repository: redhat-user-workloads/crt-redhat-acm-tenant/acm-operator-bundle-acm-215
 acr:
@@ -35,7 +35,7 @@ adminApi:
     issuer: Self
     name: admin-api-cert-swft-lnstest
   image:
-    digest: sha256:01223f7c60e32210554ce46c63a47bc09507d08ddc98f49f89c8fef6bfcda3d3
+    digest: sha256:aa49815f5f103e6a33911b8b9290a2b9eabae5a1e931a99386ced2cdb5f06738
     registry: arohcpsvcdev.azurecr.io
     repository: arohcpadminapi
   k8s:
@@ -86,7 +86,7 @@ backend:
     tlsCertificatesIssuer: Self
   exitOnPanic: true
   image:
-    digest: sha256:1f02a6963d6e4d6734f8432777ac6b924f286fad0136dfff608a6904e77feac6
+    digest: sha256:85deff1008fd3455d7ca9c308f2c1c64d82036832d3ca7d8572bfde7cfc19e0a
     registry: arohcpsvcdev.azurecr.io
     repository: arohcpbackend
   k8s:
@@ -101,7 +101,7 @@ backend:
     exporter: ""
 backplaneAPI:
   image:
-    digest: sha256:bfbd903e800a441b68c76a0eda0184c1114a395da58063050cd0305ad0971050
+    digest: sha256:9595652e07044226b90b19af2b7d1947684086c32e5049404139a72e0dd30b34
     registry: quay.io
     repository: app-sre/backplane-api
 billing:
@@ -191,7 +191,7 @@ clustersService:
     exporter: ""
 customExporter:
   image:
-    digest: sha256:38294123323d6fd6b64bf8095ad5cb1d11997023e20d61349d47f6615318205e
+    digest: sha256:f51a27f9b992cc21fee6f455dce01c0b50341ca82c03a52332467a10e226ca9e
     registry: arohcpsvcdev.azurecr.io
     repository: arohcpmetrics
   k8s:
@@ -247,7 +247,7 @@ frontend:
     zoneRedundantMode: Disabled
   exitOnPanic: true
   image:
-    digest: sha256:78749a8731e7cb2d76893c27b5f5ae54db943f55302dbf9975fe66f784a4cc5f
+    digest: sha256:1e183eef45f161d6b3b0ba94982ebd30536ca94e1ac534410c92d804f509f653
     registry: arohcpsvcdev.azurecr.io
     repository: arohcpfrontend
   k8s:
@@ -356,7 +356,7 @@ global:
 hypershift:
   additionalInstallArg: --enable-cpo-overrides
   image:
-    digest: sha256:e7748a72fa8e1bbcf9b7c823b94bdc3a9967f92b4f5080df360eda3d0187af52
+    digest: sha256:5c4ce9ac3f4169bcf6c6382e1ebed706064db728bbf554fc6eda37aa4df84666
     registry: quay.io
     repository: redhat-services-prod/crt-redhat-acm-tenant/hypershift/hypershift-operator
   limitClusterSizes: true
@@ -367,7 +367,7 @@ imageSync:
   ocMirror:
     enabled: true
     image:
-      digest: sha256:b9a1de42a37c9b838dfa9028233e7d25bfbb1b6ba497f239b47d2cc3e3eae500
+      digest: sha256:de93a4b3df98f85b9bb21965ea5ab859f7916e69bd6659783665d25e3f559e80
       registry: arohcpsvcdev.azurecr.io
       repository: image-sync/oc-mirror
     jobNamePrefix: ""
@@ -430,7 +430,7 @@ maestro:
     name: arohcp-swft-maestro-lnstest
     private: false
   image:
-    digest: sha256:8afde7f961257dc948732ead18da933bd4472060a1723e7e594fcdc7c0152558
+    digest: sha256:195db1fb826c90b6f3a7621b2d11ed79d632e4e93a5dc475fb4e81d2c2e44cae
     registry: quay.io
     repository: redhat-user-workloads/maestro-rhtap-tenant/maestro/maestro
   postgres:
@@ -748,7 +748,7 @@ sessiongate:
     issuer: Self
     name: sessiongate-cert-swft-lnstest
   image:
-    digest: sha256:ce93e49b2a1ca67b20897b15a809e38512e0bab52c2baf7fd3e47ddb6faf68f4
+    digest: sha256:776f190c68a626f40ea9269b2aad5cd59c9da15060c0ff6261a0df1515fb6da6
     registry: arohcpsvcdev.azurecr.io
     repository: arohcpsessiongate
   k8s:
