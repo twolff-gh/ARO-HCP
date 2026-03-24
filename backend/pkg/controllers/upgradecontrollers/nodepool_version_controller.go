@@ -179,8 +179,8 @@ func (c *nodePoolVersionSyncer) SyncOnce(ctx context.Context, key controllerutil
 	//   	- upgradepolicy.targetVersion: if the policy has started this version is applying to the nodepool
 	//   - In Hypershift
 	//		- .Status.Version: shows the latest applied version https://github.com/openshift/hypershift/blob/main/api/hypershift/v1beta1/nodepool_types.go#L246-L251
+	logger := utils.LoggerFromContext(ctx)
 	if !slices.Equal(oldActiveVersions, existingServiceProviderNodePool.Status.NodePoolVersion.ActiveVersions) {
-		logger := utils.LoggerFromContext(ctx)
 		logger.Info("Active versions changed", "oldActiveVersions", oldActiveVersions, "newActiveVersions", existingServiceProviderNodePool.Status.NodePoolVersion.ActiveVersions)
 		existingServiceProviderNodePool, err = serviceProviderCosmosNodePoolClient.Replace(ctx, existingServiceProviderNodePool, nil)
 		if err != nil {
@@ -211,6 +211,8 @@ func (c *nodePoolVersionSyncer) SyncOnce(ctx context.Context, key controllerutil
 	if err != nil {
 		return utils.TrackError(fmt.Errorf("failed to replace ServiceProviderNodePool: %w", err))
 	}
+
+	logger.Info("Updated ServiceProviderNodePool with new desired version", "desiredVersion", customerDesiredVersion.String())
 
 	return nil
 }
@@ -257,6 +259,9 @@ func (c *nodePoolVersionSyncer) validateDesiredNodePoolVersion(
 	if desiredVersion == nil {
 		return fmt.Errorf("customerDesiredVersion is nil, cannot evaluate upgrade")
 	}
+
+	logger := utils.LoggerFromContext(ctx)
+	logger.Info("Validating desired nodepool version", "desiredVersion", desiredVersion.String(), "channelGroup", channelGroup)
 
 	// Get all active versions from ServiceProviderNodePool
 	nodePoolActiveVersions := spNodePool.Status.NodePoolVersion.ActiveVersions
