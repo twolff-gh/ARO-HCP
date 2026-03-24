@@ -29,6 +29,8 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/utils/set"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
+
 	"github.com/Azure/ARO-HCP/test/util/framework"
 )
 
@@ -108,6 +110,32 @@ type verifyNodePoolUpgrade struct {
 	previousReleaseImages set.Set[string]
 }
 
+// nodeSummary is a compact representation of a node for error messages.
+// Full node objects can be 10KB+ due to annotations and are too large for error output.
+type nodeSummary struct {
+	Name                    string   `json:"name"`
+	Ready                   bool     `json:"ready"`
+	ContainerRuntimeVersion string   `json:"containerRuntimeVersion"`
+	ReleaseImages           []string `json:"releaseImages,omitempty"`
+}
+
+func summarizeNodes(nodes []corev1.Node) []nodeSummary {
+	summaries := make([]nodeSummary, len(nodes))
+	for i, node := range nodes {
+		var releaseImages []string
+		for _, img := range node.Status.Images {
+			releaseImages = append(releaseImages, img.Names...)
+		}
+		summaries[i] = nodeSummary{
+			Name:                    node.Name,
+			Ready:                   nodeReady(to.Ptr(node)),
+			ContainerRuntimeVersion: node.Status.NodeInfo.ContainerRuntimeVersion,
+			ReleaseImages:           releaseImages,
+		}
+	}
+	return summaries
+}
+
 func (v verifyNodePoolUpgrade) Name() string {
 	return fmt.Sprintf("VerifyNodePoolUpgrade(expected=%s, nodePool=%s)", v.expectedVersion, v.nodePoolName)
 }
@@ -153,11 +181,12 @@ func (v verifyNodePoolUpgrade) Verify(ctx context.Context, adminRESTConfig *rest
 	}
 
 	msg := fmt.Sprintf("node pool upgrade verification failed: %s", strings.Join(reasons, "; "))
-	nodesJSON, err := json.Marshal(matchingNodes)
+	nodeSummaries := summarizeNodes(matchingNodes)
+	nodeSummariesJSON, err := json.Marshal(nodeSummaries)
 	if err != nil {
-		return fmt.Errorf("%s; marshal nodes: %w", msg, err)
+		return fmt.Errorf("%s; marshal node summaries: %w", msg, err)
 	}
-	return fmt.Errorf("%s; nodes=%s", msg, string(nodesJSON))
+	return fmt.Errorf("%s; nodes=%s", msg, string(nodeSummariesJSON))
 }
 
 // VerifyNodePoolUpgrade verifies after a node pool upgrade (y-stream or z-stream) for nodes in the
