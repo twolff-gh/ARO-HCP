@@ -246,28 +246,45 @@ func parseJSONLFile(path string) ([]dataDumpEntry, error) {
 	return entries, nil
 }
 
+// unwrapLogEnvelope checks if the JSON is wrapped in a {"log": {...}} envelope
+// and returns the inner JSON if so, otherwise returns the original.
+func unwrapLogEnvelope(logJSON string) string {
+	var envelope struct {
+		Log json.RawMessage `json:"log"`
+	}
+	if err := json.Unmarshal([]byte(logJSON), &envelope); err != nil {
+		return logJSON
+	}
+	if envelope.Log != nil {
+		return string(envelope.Log)
+	}
+	return logJSON
+}
+
 // parseLogJSON parses a single log JSON line and returns a dataDumpEntry
 func parseLogJSON(logJSON string) (dataDumpEntry, bool) {
+	// Unwrap {"log": {...}} envelope if present
+	inner := unwrapLogEnvelope(logJSON)
+
 	var entry logEntry
-	if err := json.Unmarshal([]byte(logJSON), &entry); err != nil {
+	if err := json.Unmarshal([]byte(inner), &entry); err != nil {
 		return dataDumpEntry{}, false
 	}
 
-	// For new format, the entire log line is the content (not entry.Msg)
-	// We need to extract resourceID and content from the full log JSON
-	resourceID := extractResourceID(logJSON)
+	// We need to extract resourceID and content from the inner log JSON
+	resourceID := extractResourceID(inner)
 	if resourceID == "" {
 		return dataDumpEntry{}, false
 	}
 
 	// Extract the content to write to the file
-	content := extractContent(logJSON)
+	content := extractContent(inner)
 
 	return dataDumpEntry{
 		Timestamp:  entry.Time,
 		ResourceID: resourceID,
 		Content:    content,
-		FullMsg:    logJSON,
+		FullMsg:    inner,
 	}, true
 }
 
