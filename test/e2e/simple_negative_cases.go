@@ -173,14 +173,11 @@ var _ = Describe("Customer", func() {
 			clusterVersion := api.Must(semver.ParseTolerant(clusterParams.OpenshiftVersionId))
 			invalidNodePoolVersion := fmt.Sprintf("%d.%d.0", clusterVersion.Major, clusterVersion.Minor+1) // +1 y-stream, z set to 0
 
-			nodePoolVersionUpdate := hcpsdk20240610preview.NodePoolUpdate{
-				Properties: &hcpsdk20240610preview.NodePoolPropertiesUpdate{
-					Version: &hcpsdk20240610preview.NodePoolVersionProfile{
-						ID: &invalidNodePoolVersion,
-					},
-				},
-			}
-			_, err = nodePoolClient.BeginUpdate(ctx, *resourceGroup.Name, clusterParams.ClusterName, nodePoolParams.NodePoolName, nodePoolVersionUpdate, nil)
+			npForVersionUpdate, err := nodePoolClient.Get(ctx, *resourceGroup.Name, clusterParams.ClusterName, nodePoolParams.NodePoolName, nil)
+			Expect(err).ToNot(HaveOccurred())
+
+			npForVersionUpdate.Properties.Version.ID = &invalidNodePoolVersion
+			_, err = nodePoolClient.BeginCreateOrUpdate(ctx, *resourceGroup.Name, clusterParams.ClusterName, nodePoolParams.NodePoolName, npForVersionUpdate.NodePool, nil)
 			checkExpectedError(&errs, "invalid node pool version update", err, "node pool version cannot exceed control plane")
 
 			// TEST CASE: ARO-24877
