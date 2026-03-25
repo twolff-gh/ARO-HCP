@@ -45,11 +45,18 @@ import (
 var _ = Describe("Customer", func() {
 	DescribeTable("should upgrade a nodepool",
 		func(ctx context.Context, nodePoolMinor string, targetMinor string) {
+			// ARO-25490 (https://redhat.atlassian.net/browse/ARO-25490): remove after 2026-04-07 UTC or when fixed in CS.
+			// Node pools on minor 4.21 fail during install (Azure marketplace image missing in CS).
+			if nodePoolMinor == "4.21" && time.Now().Before(time.Date(2026, 4, 7, 0, 0, 0, 0, time.UTC)) {
+				Skip("skipped until ARO-25490 fixed in CS or after 2026-04-07: 4.21 node pool install fails — " +
+					"Failed to process pending node pool 'npupgrade-4-21' for cluster '…': " +
+					"failed to retrieve azure marketplace image for nodepool 'npupgrade-4-21': azure marketplace image '4.21-gen2' not found")
+			}
+
 			// TODO: decide if we want to use candidate channel group instead of stable for the nodepool upgrade
 			channelGroup := framework.DefaultOCPChannelGroup
-
-			nodePoolMinorVersion := api.Must(semver.ParseTolerant(nodePoolMinor))
 			targetMinorVersion := api.Must(semver.ParseTolerant(targetMinor))
+			nodePoolMinorVersion := api.Must(semver.ParseTolerant(nodePoolMinor))
 
 			var (
 				nodePoolInitialVersion string
