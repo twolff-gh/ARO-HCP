@@ -44,10 +44,10 @@ var _ = Describe("Control plane automated z-stream upgrade with candidate channe
 			tc := framework.NewTestContext()
 
 			By("fetching available versions from the RP")
-			availableVersions, err := framework.GetAvailableVersions(ctx, tc, "candidate")
+			availableVersions, err := framework.GetAvailableVersions(ctx, tc)
 			Expect(err).NotTo(HaveOccurred())
 			if len(availableVersions) == 0 {
-				Skip("no candidate versions available from the RP")
+				Skip("no versions available from the RP")
 			}
 
 			installVersion, hasUpgradePath, err := framework.GetInstallVersionForZStreamUpgrade(ctx, "candidate", version, availableVersions)
