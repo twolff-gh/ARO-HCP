@@ -23,6 +23,21 @@ obs-agents, platform-utils, prom-stack, velero, istio
 
 ACM components (require extra steps): acm-operator, acm-mce
 
+### Branch Strategy
+
+All bump work MUST happen on a dedicated branch, never on main. Create a branch
+before making any changes. Name the branch after the component(s) being updated
+or excluded:
+
+- Single component: `bump-<component>` (e.g. `bump-hypershift`)
+- Multiple components: `bump-<component1>-<component2>` (e.g. `bump-maestro-hypershift`)
+- All except some: `bump-all-except-<excluded>` (e.g. `bump-all-except-arohcpfrontend`)
+- All components: `bump-all`
+
+```bash
+git checkout -b bump-<name> main
+```
+
 ### Bump a Single Component
 
 ```bash
