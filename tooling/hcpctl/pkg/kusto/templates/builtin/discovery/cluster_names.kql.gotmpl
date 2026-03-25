@@ -1,3 +1,4 @@
 containerLogs
+| where timestamp between ({{.TimestampMin}} .. {{.TimestampMax}})
 | where log has '{{.SubResourceGroupId}}'
 | distinct cluster

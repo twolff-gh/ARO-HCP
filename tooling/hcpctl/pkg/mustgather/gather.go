@@ -401,20 +401,24 @@ func (g *Gatherer) GatherLogs(ctx context.Context) error {
 	}
 	logger.V(1).Info("Obtained following clusterNames", "clusterNames", strings.Join(clusterNames, ", "))
 
-	var customQueries []kusto.Query
-	customQueryDefinitions := queryFactory.GetAllCustomQueryDefinitions()
-	for _, def := range customQueryDefinitions {
-		if def.IncludeInMustGather {
-			q, err := queryFactory.Build(def, kusto.NewTemplateDataFromOptions(g.GetQueryOptions(), kusto.WithClusterNames(clusterNames)))
-			if err != nil {
-				return fmt.Errorf("failed to build custom query %q: %w", def.Name, err)
+	if len(clusterNames) == 0 {
+		logger.Info("Warning: no cluster names discovered, skipping custom queries")
+	} else {
+		var customQueries []kusto.Query
+		customQueryDefinitions := queryFactory.GetAllCustomQueryDefinitions()
+		for _, def := range customQueryDefinitions {
+			if def.IncludeInMustGather {
+				q, err := queryFactory.Build(def, kusto.NewTemplateDataFromOptions(g.GetQueryOptions(), kusto.WithClusterNames(clusterNames)))
+				if err != nil {
+					return fmt.Errorf("failed to build custom query %q: %w", def.Name, err)
+				}
+				customQueries = append(customQueries, q...)
 			}
-			customQueries = append(customQueries, q...)
 		}
-	}
 
-	if err := g.queryAndWriteToFile(ctx, customQueries); err != nil {
-		gatherErrors = errors.Join(gatherErrors, fmt.Errorf("failed to execute custom logs query: %w", err))
+		if err := g.queryAndWriteToFile(ctx, customQueries); err != nil {
+			gatherErrors = errors.Join(gatherErrors, fmt.Errorf("failed to execute custom logs query: %w", err))
+		}
 	}
 
 	if g.opts.SkipKubernetesEventsLogs && !g.opts.CollectSystemdLogs {

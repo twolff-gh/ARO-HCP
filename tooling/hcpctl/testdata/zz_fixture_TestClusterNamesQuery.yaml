@@ -1,6 +1,7 @@
 database: ServiceLogs
 kql: |-
   containerLogs
+  | where timestamp between (datetime(2025-01-01T00:00:00.0000000Z) .. datetime(2025-01-02T00:00:00.0000000Z))
   | where log has '/subscriptions/test-sub/resourceGroups/test-rg'
   | distinct cluster
 name: clusterNamesSvc

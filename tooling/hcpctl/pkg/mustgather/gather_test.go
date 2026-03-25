@@ -190,8 +190,9 @@ func TestGatherer_GatherLogs_SkipOnlySystemdLogs(t *testing.T) {
 	err := gatherer.GatherLogs(t.Context())
 	assert.NoError(t, err)
 
-	// Verify ConcurrentQueries was called 4 times (services + HCP + custom + kubernetes events, no systemd)
-	mockQueryClient.AssertNumberOfCalls(t, "ConcurrentQueries", 4)
+	// Verify ConcurrentQueries was called 3 times (services + HCP + kubernetes events, no systemd)
+	// Custom queries are skipped because cluster names discovery returns empty results
+	mockQueryClient.AssertNumberOfCalls(t, "ConcurrentQueries", 3)
 }
 
 func TestGatherer_GatherInfraLogs(t *testing.T) {
