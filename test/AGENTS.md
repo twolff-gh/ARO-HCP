@@ -93,3 +93,29 @@
 * **Descriptive Names:** Use descriptive names for test files, test cases, bicep/arm deployments, and functions.
 * **Test case description:** Maintain descriptions of specifications and tests as informative and comprehensive complete sentences.
 * **Development environment test cases:** Ensure new negative test cases produce the same result in development and higher environments by running them in both. Do not use the label `AroRpApiCompatible` if the test case fails in the development environment.
+
+## Running or Filtering Specific E2E Tests
+
+This project does NOT use Ginkgo's Focus (`FDescribe`, `FIt`, `FEntry`) to select tests.
+Instead, tests are filtered via `specs.MustFilter()` in `test/cmd/aro-hcp-tests/main.go`
+using CEL expressions.
+
+To run only specific tests, uncomment and modify the `MustFilter` line in
+`test/cmd/aro-hcp-tests/main.go`:
+
+```go
+// TODO: remove after PR validation
+specs = specs.MustFilter([]string{`name.contains("z-stream upgrade")`})
+```
+
+Other filter examples:
+
+```go
+// Filter by label
+specs = specs.MustFilter([]string{`labels.exists(l, l=="Positivity:Positive")`})
+
+// Combine filters (name AND label)
+specs = specs.MustFilter([]string{`name.contains("Cluster") && labels.exists(l, l=="Importance:Critical")`})
+```
+
+Always revert test filters before merging. Leaving a filter in place silently skips tests in CI.
