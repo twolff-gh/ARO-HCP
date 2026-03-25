@@ -1,12 +1,12 @@
 acm:
   mce:
     bundle:
-      digest: sha256:ba98af6c60952b7e8b4e682c16c31c560e342a090a1607adc47cd31d630905f3
+      digest: sha256:3e9c550d71223566ec0a4132ffe9952def98fac9e02ce53621e6b0f5dc9e96e7
       registry: quay.io
       repository: redhat-user-workloads/crt-redhat-acm-tenant/mce-operator-bundle-mce-210
   operator:
     bundle:
-      digest: sha256:57efa3ac2136e8b32fde890c8010c3dbfb62611663797e17e90609f0ddc407ba
+      digest: sha256:851acca63dfb8ce9ac60dd755f5dd3f4ed77b59cc6124651cd753f918819e01a
       registry: quay.io
       repository: redhat-user-workloads/crt-redhat-acm-tenant/acm-operator-bundle-acm-215
 acr:
@@ -35,7 +35,7 @@ adminApi:
     issuer: Self
     name: admin-api-cert-dev-usw3
   image:
-    digest: sha256:aa49815f5f103e6a33911b8b9290a2b9eabae5a1e931a99386ced2cdb5f06738
+    digest: sha256:0c22afd00e51db4b606075455dce40f9d4561052e09ff5884ff50493926bc471
     registry: arohcpsvcdev.azurecr.io
     repository: arohcpadminapi
   k8s:
@@ -87,7 +87,7 @@ backend:
     tlsCertificatesIssuer: Self
   exitOnPanic: true
   image:
-    digest: sha256:85deff1008fd3455d7ca9c308f2c1c64d82036832d3ca7d8572bfde7cfc19e0a
+    digest: sha256:ee90fe51b01cc19452db90df72e709b9de16bfb281562ae26ed50ce9b7f90e29
     registry: arohcpsvcdev.azurecr.io
     repository: arohcpbackend
   k8s:
@@ -248,7 +248,7 @@ frontend:
     zoneRedundantMode: Disabled
   exitOnPanic: true
   image:
-    digest: sha256:1e183eef45f161d6b3b0ba94982ebd30536ca94e1ac534410c92d804f509f653
+    digest: sha256:0a2e5c49f72a3210d62b862501f287750355531c8270cb29d36befe576064e7b
     registry: arohcpsvcdev.azurecr.io
     repository: arohcpfrontend
   k8s:
@@ -357,7 +357,7 @@ global:
 hypershift:
   additionalInstallArg: --enable-cpo-overrides
   image:
-    digest: sha256:a190b2bd63a051cf4ef9d52f139a88df1dd326b50d627142ddfc62fede92558a
+    digest: sha256:c5787a7f15979007174b4099b9f91e449c797c78aff00eb0787a510e4c7cb73a
     registry: quay.io
     repository: redhat-services-prod/crt-redhat-acm-tenant/hypershift/hypershift-operator
   limitClusterSizes: true
@@ -368,7 +368,7 @@ imageSync:
   ocMirror:
     enabled: true
     image:
-      digest: sha256:de93a4b3df98f85b9bb21965ea5ab859f7916e69bd6659783665d25e3f559e80
+      digest: sha256:ef65f54d57c40a1bb645072be64d2d9822df9f8c163a7b79c7a8147fd9a3584d
       registry: arohcpsvcdev.azurecr.io
       repository: image-sync/oc-mirror
     jobNamePrefix: ""
@@ -747,7 +747,7 @@ sessiongate:
     issuer: Self
     name: sessiongate-cert-dev-usw3
   image:
-    digest: sha256:776f190c68a626f40ea9269b2aad5cd59c9da15060c0ff6261a0df1515fb6da6
+    digest: sha256:24de7f00bc8e1da12e0eb7dcded9def55a753e8a0c296a2e9184d6c549274db0
     registry: arohcpsvcdev.azurecr.io
     repository: arohcpsessiongate
   k8s:
