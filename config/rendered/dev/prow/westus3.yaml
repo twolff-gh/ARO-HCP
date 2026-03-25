@@ -464,8 +464,8 @@ maestro:
 mgmt:
   aks:
     clusterOutboundIPAddressIPTags: ""
-    enableSwiftV2Nodepools: false
-    enableSwiftV2Vnet: false
+    enableSwiftV2Nodepools: true
+    enableSwiftV2Vnet: true
     etcd:
       name: ah-prow-me-j7654321-1
       private: true
