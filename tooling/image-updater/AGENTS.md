@@ -99,11 +99,26 @@ Split changes into exactly two commits:
 
 1. **First commit**: The image digest update in `config/config.yaml`
    - Only contains the changes made by `image-updater update`
-   - Commit message: `bump <component-name(s)> image(s)`
+   - Title: `chore: bump <component-name(s)> image(s)`
+   - Body: Include the markdown table output from the `image-updater update` command.
+     This table will be used as the PR body when opening the pull request.
 
 2. **Second commit**: The rendered config and digest changes
    - Contains all changes produced by the post-bump `make` commands
-   - Commit message: `render config after <component-name(s)> bump`
+   - Title: `chore: render config after <component-name(s)> bump`
+
+### PR Body
+
+When opening the PR, use the markdown table from the bump commit message as the
+PR body. The `--output-format markdown` flag produces a table like:
+
+```
+| Name | Old Digest | New Digest | Tag | Date | Status |
+| --- | --- | --- | --- | --- | --- |
+| hypershift | 5c4ce9ac3f41… | a190b2bd63a0… | latest | 2026-03-25 08:24 | updated |
+```
+
+This goes directly into the PR description so reviewers can see what changed at a glance.
 
 ### Dry Run
 
