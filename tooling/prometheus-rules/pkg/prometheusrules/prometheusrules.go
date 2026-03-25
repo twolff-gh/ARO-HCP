@@ -22,21 +22,24 @@ import (
 )
 
 // Validate checks CLI arguments for rule generation.
-func Validate(args []string, configFilePath string) error {
+func Validate(args []string, configFilePath, promtoolPath string) error {
 	if len(args) != 0 {
 		return errors.New("no arguments are supported")
 	}
 	if configFilePath == "" {
 		return errors.New("--config-file is required")
 	}
+	if promtoolPath == "" {
+		return errors.New("--promtool-path cannot be empty")
+	}
 	return nil
 }
 
 // GenerateFromConfig validates and renders rule files into Bicep output.
-func GenerateFromConfig(configFilePath string, forceInfoSeverity bool) error {
+func GenerateFromConfig(configFilePath string, forceInfoSeverity bool, promtoolPath string) error {
 	o := internal.NewOptions()
 
-	if err := o.Complete(configFilePath, forceInfoSeverity); err != nil {
+	if err := o.Complete(configFilePath, forceInfoSeverity, promtoolPath); err != nil {
 		return fmt.Errorf("could not complete options, %w", err)
 	}
 	if err := o.RunTests(); err != nil {

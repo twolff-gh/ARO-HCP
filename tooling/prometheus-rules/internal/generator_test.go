@@ -306,7 +306,7 @@ spec:
 			}
 
 			opts := NewOptions()
-			err := opts.Complete(configPath, false)
+			err := opts.Complete(configPath, false, "promtool")
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -346,6 +346,7 @@ func TestOptionsRunTests(t *testing.T) {
 
 	t.Run("with test files but no promtool", func(t *testing.T) {
 		opts := &Options{
+			promtoolPath: "definitely-not-a-real-promtool",
 			ruleFiles: []alertingRuleFile{
 				{
 					FileBaseName:     "test.yaml",

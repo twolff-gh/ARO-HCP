@@ -56,6 +56,7 @@ type GroupAlerts struct {
 
 type Options struct {
 	forceInfoSeverity  bool
+	promtoolPath       string
 	outputBicep        string
 	includedAlerts     map[string][]string
 	ruleFiles          []alertingRuleFile
@@ -97,9 +98,13 @@ func readRulesFile(filename string) (*monitoringv1.PrometheusRule, error) {
 	return &rules, nil
 }
 
-func (o *Options) Complete(configFilePath string, forceInfoSeverity bool) error {
+func (o *Options) Complete(configFilePath string, forceInfoSeverity bool, promtoolPath string) error {
 
 	o.forceInfoSeverity = forceInfoSeverity
+	if promtoolPath == "" {
+		return fmt.Errorf("promtoolPath cannot be an empty string")
+	}
+	o.promtoolPath = promtoolPath
 
 	o.ruleFiles = make([]alertingRuleFile, 0)
 
@@ -233,7 +238,7 @@ func (o *Options) RunTests() error {
 			return fmt.Errorf("error writing rule groups test file %v", err)
 		}
 		logrus.Debugf("running test %s", irf.TestFileBaseName)
-		cmd := exec.Command("promtool", "test", "rules", testFile)
+		cmd := exec.Command(o.promtoolPath, "test", "rules", testFile)
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			logrus.Error(string(output))
