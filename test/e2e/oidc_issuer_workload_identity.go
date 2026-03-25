@@ -17,6 +17,7 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -33,6 +34,136 @@ import (
 	"github.com/Azure/ARO-HCP/test/util/labels"
 	"github.com/Azure/ARO-HCP/test/util/verifiers"
 )
+
+// newWITestPodWithWebhook creates a pod that relies on the workload identity
+// webhook to inject env vars, volumes, and volume mounts via the
+// "azure.workload.identity/use" label.
+func newWITestPodWithWebhook(namespace string) *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "wi-test-pod",
+			Namespace: namespace,
+			Labels: map[string]string{
+				"azure.workload.identity/use": "true",
+			},
+		},
+		Spec: corev1.PodSpec{
+			ServiceAccountName: "wi-test-sa",
+			RestartPolicy:      corev1.RestartPolicyOnFailure,
+			DNSPolicy:          corev1.DNSNone,
+			DNSConfig: &corev1.PodDNSConfig{
+				Nameservers: []string{"8.8.8.8", "1.1.1.1"},
+			},
+			Containers: []corev1.Container{
+				{
+					Name:  "azure-cli",
+					Image: "mcr.microsoft.com/azure-cli:latest",
+					SecurityContext: &corev1.SecurityContext{
+						RunAsUser:                to.Ptr(int64(0)),
+						AllowPrivilegeEscalation: to.Ptr(false),
+						SeccompProfile: &corev1.SeccompProfile{
+							Type: corev1.SeccompProfileTypeRuntimeDefault,
+						},
+						Capabilities: &corev1.Capabilities{
+							Drop: []corev1.Capability{"ALL"},
+						},
+					},
+					Command: []string{"/bin/sh", "-c", `
+						az login --federated-token "$(cat $AZURE_FEDERATED_TOKEN_FILE)" \
+							--service-principal \
+							-u "$AZURE_CLIENT_ID" \
+							-t "$AZURE_TENANT_ID" \
+							--allow-no-subscriptions
+					`},
+				},
+			},
+		},
+	}
+}
+
+// newWITestPodWithManualInjection creates a pod that manually injects the
+// env vars, volumes, and volume mounts that the workload identity webhook
+// would normally provide. Use this in environments where the webhook is
+// not yet deployed.
+func newWITestPodWithManualInjection(namespace, clientID, tenantID string) *corev1.Pod {
+	tokenPath := "/var/run/secrets/azure/tokens/azure-identity-token"
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "wi-test-pod",
+			Namespace: namespace,
+		},
+		Spec: corev1.PodSpec{
+			ServiceAccountName: "wi-test-sa",
+			RestartPolicy:      corev1.RestartPolicyOnFailure,
+			DNSPolicy:          corev1.DNSNone,
+			DNSConfig: &corev1.PodDNSConfig{
+				Nameservers: []string{"8.8.8.8", "1.1.1.1"},
+			},
+			Volumes: []corev1.Volume{
+				{
+					Name: "azure-identity-token",
+					VolumeSource: corev1.VolumeSource{
+						Projected: &corev1.ProjectedVolumeSource{
+							Sources: []corev1.VolumeProjection{
+								{
+									ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
+										Audience:          "api://AzureADTokenExchange",
+										ExpirationSeconds: to.Ptr(int64(3600)),
+										Path:              "azure-identity-token",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			Containers: []corev1.Container{
+				{
+					Name:  "azure-cli",
+					Image: "mcr.microsoft.com/azure-cli:latest",
+					SecurityContext: &corev1.SecurityContext{
+						RunAsUser:                to.Ptr(int64(0)),
+						AllowPrivilegeEscalation: to.Ptr(false),
+						SeccompProfile: &corev1.SeccompProfile{
+							Type: corev1.SeccompProfileTypeRuntimeDefault,
+						},
+						Capabilities: &corev1.Capabilities{
+							Drop: []corev1.Capability{"ALL"},
+						},
+					},
+					Command: []string{"/bin/sh", "-c", `
+						az login --federated-token "$(cat $AZURE_FEDERATED_TOKEN_FILE)" \
+							--service-principal \
+							-u "$AZURE_CLIENT_ID" \
+							-t "$AZURE_TENANT_ID" \
+							--allow-no-subscriptions
+					`},
+					Env: []corev1.EnvVar{
+						{
+							Name:  "AZURE_CLIENT_ID",
+							Value: clientID,
+						},
+						{
+							Name:  "AZURE_TENANT_ID",
+							Value: tenantID,
+						},
+						{
+							Name:  "AZURE_FEDERATED_TOKEN_FILE",
+							Value: tokenPath,
+						},
+					},
+					VolumeMounts: []corev1.VolumeMount{
+						{
+							Name:      "azure-identity-token",
+							MountPath: "/var/run/secrets/azure/tokens",
+							ReadOnly:  true,
+						},
+					},
+				},
+			},
+		},
+	}
+}
 
 var _ = Describe("Customer", func() {
 	It("should be able to use workload identity via the cluster OIDC issuer URL",
@@ -195,47 +326,20 @@ var _ = Describe("Customer", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			By("creating a pod that authenticates to Azure using federated workload identity credentials")
-			pod := &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "wi-test-pod",
-					Namespace: testNamespace,
-					Labels: map[string]string{
-						"azure.workload.identity/use": "true",
-					},
-				},
-				Spec: corev1.PodSpec{
-					ServiceAccountName: testServiceAccount,
-					RestartPolicy:      corev1.RestartPolicyOnFailure,
-					// Use external DNS to avoid dependency on openshift-dns pods,
-					// which may not be ready yet when this pod starts on a new node.
-					DNSPolicy: corev1.DNSNone,
-					DNSConfig: &corev1.PodDNSConfig{
-						Nameservers: []string{"8.8.8.8", "1.1.1.1"},
-					},
-					Containers: []corev1.Container{
-						{
-							Name:  "azure-cli",
-							Image: "mcr.microsoft.com/azure-cli:latest",
-							SecurityContext: &corev1.SecurityContext{
-								RunAsUser:                to.Ptr(int64(0)), // azure-cli container runs as root
-								AllowPrivilegeEscalation: to.Ptr(false),
-								SeccompProfile: &corev1.SeccompProfile{
-									Type: corev1.SeccompProfileTypeRuntimeDefault,
-								},
-								Capabilities: &corev1.Capabilities{
-									Drop: []corev1.Capability{"ALL"},
-								},
-							},
-							Command: []string{"/bin/sh", "-c", `
-								az login --federated-token "$(cat $AZURE_FEDERATED_TOKEN_FILE)" \
-									--service-principal \
-									-u "$AZURE_CLIENT_ID" \
-									-t "$AZURE_TENANT_ID" \
-									--allow-no-subscriptions
-							`},
-						},
-					},
-				},
+			// Dev and INT environments have the workload identity webhook deployed.
+			// Higher environments (stg, prod) may not have it yet, so we manually
+			// inject the fields as a fallback.
+			// After April 1st 2026, the webhook should be available everywhere.
+			timebombWebhook := time.Date(2026, time.April, 1, 0, 0, 0, 0, time.UTC)
+			useWebhook := time.Now().After(timebombWebhook) ||
+				framework.IsDevelopmentEnvironment() ||
+				os.Getenv("ARO_HCP_SUITE_NAME") == "integration/parallel"
+
+			var pod *corev1.Pod
+			if useWebhook {
+				pod = newWITestPodWithWebhook(testNamespace)
+			} else {
+				pod = newWITestPodWithManualInjection(testNamespace, clientID, tc.TenantID())
 			}
 			_, err = adminClient.CoreV1().Pods(testNamespace).Create(ctx, pod, metav1.CreateOptions{})
 			Expect(err).NotTo(HaveOccurred())
