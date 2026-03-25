@@ -98,10 +98,10 @@
 
 This project does NOT use Ginkgo's Focus (`FDescribe`, `FIt`, `FEntry`) to select tests.
 
-### Preferred: CLI-based filtering
+### Local: CLI-based filtering
 
-Use the `aro-hcp-tests` binary to run individual tests or suites without
-modifying code. Build it first with `make -C test`, then:
+Use the `aro-hcp-tests` binary to run individual tests or suites locally.
+Build it first with `make -C test`, then:
 
 ```bash
 # List available tests
@@ -116,11 +116,13 @@ modifying code. Build it first with `make -C test`, then:
 
 See `test/e2e/README.md` for full details on environment setup and available suites.
 
-### Last resort: MustFilter in main.go
+### CI / PR validation: MustFilter in main.go
 
-If CLI filtering is not sufficient, tests can be filtered via `specs.MustFilter()`
-in `test/cmd/aro-hcp-tests/main.go` using CEL expressions. Locate the commented
-line and uncomment/modify it:
+To run specific tests in a PR against Int, Stage, or Prod environments, use
+`specs.MustFilter()` in `test/cmd/aro-hcp-tests/main.go` with CEL expressions.
+This is the only way to select tests for CI runs in higher environments.
+
+Locate the commented line and uncomment/modify it:
 
 ```go
 // specs = specs.MustFilter([]string{`name.contains("filter")`})
