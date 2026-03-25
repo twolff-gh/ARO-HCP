@@ -1,27 +1,18 @@
-Load CLAUDE.md for context
+Load all of CLAUDE.md for context
 
 ## Image Bump Procedure
 
-The image-updater tool updates container image digests in `config/config.yaml`.
-Run it from the `tooling/image-updater/` directory.
+The image-updater tool updates container image digests, SHAs, and version
+fields in `config/config.yaml`. Run it from the `tooling/image-updater/`
+directory.
 
 ### Available Components
 
-Components are defined in `tooling/image-updater/config.yaml`. Current list:
+Components and groups are defined in `tooling/image-updater/config.yaml`.
+Refer to that file for the authoritative list of component and group names.
 
-maestro, maestro-agent-sidecar, hypershift, pko-package, pko-manager,
-pko-remote-phase-manager, clusters-service, aro-hcp-exporter, arohcpfrontend,
-arohcpbackend, backplaneAPI, kubeEvents, acm-operator, acm-mce,
-aksCommandRuntime, acrPull, arobit-forwarder, arobit-mdsd, secretSyncController,
-secretSyncProvider, imageSync, prometheus-operator, prometheus,
-prometheus-config-reloader, kube-state-metrics, admin-api, sessiongate,
-velero-server, velero-azure-plugin, velero-hypershift-plugin,
-kube-webhook-certgen, istio-istioctl
-
-Groups: hypershift-stack, pko, cs, aro-hcp-exporter, aro-rp, aro-deps,
-obs-agents, platform-utils, prom-stack, velero, istio
-
-ACM components (require extra steps): acm-operator, acm-mce
+ACM-related components (those whose names start with `acm-`) require extra
+post-bump steps described below.
 
 ### Branch Strategy
 
@@ -42,7 +33,7 @@ git checkout -b bump-<name> main
 
 ```bash
 cd tooling/image-updater
-./image-updater update --config config.yaml --force --components <name> --output-format markdown
+./image-updater update --config config.yaml --components <name> --output-format markdown
 ```
 
 Example: `--components hypershift`
@@ -51,7 +42,7 @@ Example: `--components hypershift`
 
 ```bash
 cd tooling/image-updater
-./image-updater update --config config.yaml --force --output-format markdown
+./image-updater update --config config.yaml --output-format markdown
 ```
 
 ### Bump All Except Some Components
@@ -60,14 +51,14 @@ Use `--exclude-components` to skip specific components:
 
 ```bash
 cd tooling/image-updater
-./image-updater update --config config.yaml --force --exclude-components arohcpfrontend,arohcpbackend --output-format markdown
+./image-updater update --config config.yaml --exclude-components arohcpfrontend,arohcpbackend --output-format markdown
 ```
 
 ### Bump by Group
 
 ```bash
 cd tooling/image-updater
-./image-updater update --config config.yaml --force --groups hypershift-stack --output-format markdown
+./image-updater update --config config.yaml --groups hypershift-stack --output-format markdown
 ```
 
 ### Post-Bump Steps
@@ -113,12 +104,18 @@ The `--output-format markdown` flag produces a table like:
 Include this table in the commit body so the PR inherits it automatically.
 Reviewers can then see what changed at a glance.
 
+### Force Update
+
+Add `--force` to update even when digests already match. This is useful for
+regenerating version tag comments but should not be used by default as it
+produces unnecessary changes when nothing has actually been updated.
+
 ### Dry Run
 
 To preview changes without writing:
 
 ```bash
-./image-updater update --config config.yaml --force --components hypershift --dry-run --output-format markdown
+./image-updater update --config config.yaml --components hypershift --dry-run --output-format markdown
 ```
 
 ### Troubleshooting
