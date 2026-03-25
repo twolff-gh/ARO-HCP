@@ -402,7 +402,7 @@ func (g *Gatherer) GatherLogs(ctx context.Context) error {
 	logger.V(1).Info("Obtained following clusterNames", "clusterNames", strings.Join(clusterNames, ", "))
 
 	if len(clusterNames) == 0 {
-		logger.Info("Warning: no cluster names discovered, skipping custom queries")
+		logger.V(1).Info("no cluster names discovered, skipping custom queries")
 	} else {
 		var customQueries []kusto.Query
 		customQueryDefinitions := queryFactory.GetAllCustomQueryDefinitions()

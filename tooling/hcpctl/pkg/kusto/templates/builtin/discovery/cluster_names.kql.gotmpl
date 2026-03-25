@@ -1,3 +1,4 @@
+{{- /* Scope cluster discovery to the user-provided time window to avoid returning clusters unrelated to the investigated time period. */ -}}
 containerLogs
 | where timestamp between ({{.TimestampMin}} .. {{.TimestampMax}})
 | where log has '{{.SubResourceGroupId}}'
