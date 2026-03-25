@@ -97,20 +97,41 @@
 ## Running or Filtering Specific E2E Tests
 
 This project does NOT use Ginkgo's Focus (`FDescribe`, `FIt`, `FEntry`) to select tests.
-Instead, tests are filtered via `specs.MustFilter()` in `test/cmd/aro-hcp-tests/main.go`
-using CEL expressions.
 
-To run only specific tests, uncomment and modify the `MustFilter` line in
-`test/cmd/aro-hcp-tests/main.go`:
+### Preferred: CLI-based filtering
 
-```go
-// TODO: remove after PR validation
-specs = specs.MustFilter([]string{`name.contains("z-stream upgrade")`})
+Use the `aro-hcp-tests` binary to run individual tests or suites without
+modifying code. Build it first with `make -C test`, then:
+
+```bash
+# List available tests
+./test/aro-hcp-tests list | jq '.[].name'
+
+# Run a single test by name
+./test/aro-hcp-tests run-test "Customer should be able to create an HCP cluster using bicep templates"
+
+# Run a test suite
+./test/aro-hcp-tests run-suite "integration/parallel"
 ```
 
-Other filter examples:
+See `test/e2e/README.md` for full details on environment setup and available suites.
+
+### Last resort: MustFilter in main.go
+
+If CLI filtering is not sufficient, tests can be filtered via `specs.MustFilter()`
+in `test/cmd/aro-hcp-tests/main.go` using CEL expressions. Locate the commented
+line and uncomment/modify it:
 
 ```go
+// specs = specs.MustFilter([]string{`name.contains("filter")`})
+```
+
+Filter examples:
+
+```go
+// Filter by name
+specs = specs.MustFilter([]string{`name.contains("z-stream upgrade")`})
+
 // Filter by label
 specs = specs.MustFilter([]string{`labels.exists(l, l=="Positivity:Positive")`})
 
@@ -118,4 +139,5 @@ specs = specs.MustFilter([]string{`labels.exists(l, l=="Positivity:Positive")`})
 specs = specs.MustFilter([]string{`name.contains("Cluster") && labels.exists(l, l=="Importance:Critical")`})
 ```
 
-Always revert test filters before merging. Leaving a filter in place silently skips tests in CI.
+**WARNING**: Always revert `MustFilter` edits before merging. Leaving a filter
+in place silently skips tests in CI.
