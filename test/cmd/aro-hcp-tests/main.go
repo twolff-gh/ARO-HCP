@@ -189,8 +189,7 @@ func setupCli() *cobra.Command {
 	// 	specs = specs.AddLabel("SLOW")
 
 	// Specs can be globally filtered...
-	// TODO: remove after PR validation
-	specs = specs.MustFilter([]string{`name.contains("z-stream upgrade")`})
+	// specs = specs.MustFilter([]string{`name.contains("filter")`})
 
 	// Or walked...
 	// specs = specs.Walk(func(spec *extensiontests.ExtensionTestSpec) {
