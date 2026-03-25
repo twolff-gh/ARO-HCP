@@ -50,7 +50,7 @@ var _ = Describe("Control plane automated z-stream upgrade with candidate channe
 
 			tc := framework.NewTestContext()
 
-			if len(baseInstallVersion) > 0 {
+			if len(baseInstallVersion) == 0 {
 				baseInstallVersion = minorVersion // set it to minor so that we defaul to .0 as the patch version
 			}
 			configuredVersionID := api.Must(semver.ParseTolerant(baseInstallVersion))
