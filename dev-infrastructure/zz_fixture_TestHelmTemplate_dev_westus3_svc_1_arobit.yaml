@@ -370,12 +370,6 @@ spec:
           args:
             - -c
             - /forwarder/etc/fluent-bit.conf
-          resources:
-            limits:
-              memory: 1Gi
-            requests:
-              cpu: 100m
-              memory: 1Gi
           ports:
             - name: http
               containerPort: 2020
