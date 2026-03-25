@@ -246,7 +246,8 @@ func clusterCreatePayload(clusterName, apiVersion string) []byte {
       "managedResourceGroup": "managed-rg-xvrt",
       "networkSecurityGroupId": "/subscriptions/%s/resourceGroups/bar/providers/Microsoft.Network/networkSecurityGroups/nsg",
       "outboundType": "LoadBalancer",
-      "subnetId": "/subscriptions/%s/resourceGroups/bar/providers/Microsoft.Network/virtualNetworks/vnet/subnets/subnet"
+      "subnetId": "/subscriptions/%s/resourceGroups/bar/providers/Microsoft.Network/virtualNetworks/vnet/subnets/subnet",
+      "vnetIntegrationSubnetId": "/subscriptions/%s/resourceGroups/bar/providers/Microsoft.Network/virtualNetworks/vnet/subnets/swift-subnet"
     },
     "version": {
       "channelGroup": "stable",
@@ -257,7 +258,7 @@ func clusterCreatePayload(clusterName, apiVersion string) []byte {
     "env": "test"
   },
   "type": "Microsoft.RedHatOpenShift/hcpOpenShiftClusters"
-}`, clusterName, subscriptionID, subscriptionID))
+}`, clusterName, subscriptionID, subscriptionID, subscriptionID))
 
 	default:
 		panic(fmt.Sprintf("unsupported apiVersion: %s", apiVersion))
