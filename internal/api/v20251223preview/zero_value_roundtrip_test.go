@@ -319,8 +319,9 @@ func newBaselineInternalCluster() *api.HCPOpenShiftCluster {
 				Visibility: api.VisibilityPublic,
 			},
 			Platform: api.CustomerPlatformProfile{
-				OutboundType: api.OutboundTypeLoadBalancer,
-				SubnetID:     api.Must(azcorearm.ParseResourceID("/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/myRg/providers/Microsoft.Network/virtualNetworks/vnet/subnets/subnet")),
+				OutboundType:            api.OutboundTypeLoadBalancer,
+				SubnetID:                api.Must(azcorearm.ParseResourceID("/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/myRg/providers/Microsoft.Network/virtualNetworks/vnet/subnets/subnet")),
+				VnetIntegrationSubnetID: api.Must(azcorearm.ParseResourceID("/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/myRg/providers/Microsoft.Network/virtualNetworks/vnet/subnets/swift-subnet")),
 			},
 			Autoscaling: api.ClusterAutoscalingProfile{
 				MaxNodesTotal:               100,
