@@ -32,7 +32,9 @@ import (
 )
 
 // GetAvailableVersions fetches the versions available from the RP for the given
-// channel group and returns them as a set of version strings.
+// channel group and returns them as a set of semver strings (e.g. "4.19.7").
+// The RP returns version names like "4.19.7-candidate"; the channel group suffix
+// is stripped so the result can be compared with Cincinnati semver strings.
 func GetAvailableVersions(ctx context.Context, tc *perItOrDescribeTestContext, channelGroup string) (map[string]struct{}, error) {
 	versionsClient := tc.Get20240610ClientFactoryOrDie(ctx).NewHcpOpenShiftVersionsClient()
 	pager := versionsClient.NewListPager(tc.Location(), nil)
@@ -45,7 +47,10 @@ func GetAvailableVersions(ctx context.Context, tc *perItOrDescribeTestContext, c
 		}
 		for _, v := range page.Value {
 			if v.Properties != nil && v.Properties.ChannelGroup != nil && *v.Properties.ChannelGroup == channelGroup && v.Name != nil {
-				versions[*v.Name] = struct{}{}
+				// Version names from the RP have the form "4.19.7-candidate";
+				// strip the "-<channelGroup>" suffix to get the plain semver.
+				name := strings.TrimSuffix(*v.Name, "-"+channelGroup)
+				versions[name] = struct{}{}
 			}
 		}
 	}
