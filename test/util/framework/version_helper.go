@@ -31,12 +31,35 @@ import (
 	"github.com/Azure/ARO-HCP/internal/cincinatti"
 )
 
+// GetAvailableVersions fetches the versions available from the RP for the given
+// channel group and returns them as a set of version strings.
+func GetAvailableVersions(ctx context.Context, tc *perItOrDescribeTestContext, channelGroup string) (map[string]struct{}, error) {
+	versionsClient := tc.Get20240610ClientFactoryOrDie(ctx).NewHcpOpenShiftVersionsClient()
+	pager := versionsClient.NewListPager(tc.Location(), nil)
+
+	versions := make(map[string]struct{})
+	for pager.More() {
+		page, err := pager.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list available versions: %w", err)
+		}
+		for _, v := range page.Value {
+			if v.Properties != nil && v.Properties.ChannelGroup != nil && *v.Properties.ChannelGroup == channelGroup && v.Name != nil {
+				versions[*v.Name] = struct{}{}
+			}
+		}
+	}
+	return versions, nil
+}
+
 // GetInstallVersionForZStreamUpgrade returns the version to install the cluster with when testing
 // a z-stream upgrade, and whether that version has an available z-stream upgrade path. It uses
 // configuredVersionID and queries Cincinnati for the given channelGroup (e.g. "candidate", "stable").
 // When no version with an upgrade path is found, it still returns the configured version so the
 // caller can install and optionally skip upgrade assertions.
-func GetInstallVersionForZStreamUpgrade(ctx context.Context, channelGroup string, configuredVersionID string) (installVersion string, hasUpgradePath bool, err error) {
+// availableVersions, when non-nil, constrains which versions can be selected to only those
+// present in the set (e.g. versions served by Cluster Service via the RP API).
+func GetInstallVersionForZStreamUpgrade(ctx context.Context, channelGroup string, configuredVersionID string, availableVersions map[string]struct{}) (installVersion string, hasUpgradePath bool, err error) {
 	configuredVersion := api.Must(semver.ParseTolerant(configuredVersionID))
 
 	cincinnatiURI, err := cincinatti.GetCincinnatiURI(channelGroup)
@@ -62,6 +85,12 @@ func GetInstallVersionForZStreamUpgrade(ctx context.Context, channelGroup string
 		candidateVersion := api.Must(semver.ParseTolerant(release.Version))
 		if candidateVersion.Major != configuredVersion.Major || candidateVersion.Minor != configuredVersion.Minor {
 			continue
+		}
+		// If availableVersions is provided, only include versions that the RP serves.
+		if availableVersions != nil {
+			if _, ok := availableVersions[candidateVersion.String()]; !ok {
+				continue
+			}
 		}
 		candidates = append(candidates, candidateVersion)
 	}

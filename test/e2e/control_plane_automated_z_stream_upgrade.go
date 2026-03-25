@@ -41,20 +41,22 @@ var _ = Describe("Control plane automated z-stream upgrade with candidate channe
 				customerClusterNamePrefix        = "cluster-zstream-"
 			)
 
-			// TODO: remove once https://github.com/Azure/ARO-HCP/pull/4618 is merged
-			if version == "4.19" && time.Now().Before(time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)) {
-				Skip("4.19 z-stream test temporarily skipped: Cincinnati returns versions the RP doesn't serve")
+			tc := framework.NewTestContext()
+
+			By("fetching available versions from the RP")
+			availableVersions, err := framework.GetAvailableVersions(ctx, tc, "candidate")
+			Expect(err).NotTo(HaveOccurred())
+			if len(availableVersions) == 0 {
+				Skip("no candidate versions available from the RP")
 			}
 
-			installVersion, hasUpgradePath, err := framework.GetInstallVersionForZStreamUpgrade(ctx, "candidate", version)
+			installVersion, hasUpgradePath, err := framework.GetInstallVersionForZStreamUpgrade(ctx, "candidate", version, availableVersions)
 			if err != nil {
 				if cincinatti.IsCincinnatiVersionNotFoundError(err) {
 					Skip(fmt.Sprintf("Cincinnati returned version not found for %s", version))
 				}
 				Expect(err).NotTo(HaveOccurred())
 			}
-
-			tc := framework.NewTestContext()
 			if tc.UsePooledIdentities() {
 				err := tc.AssignIdentityContainers(ctx, 1, 60*time.Second)
 				Expect(err).NotTo(HaveOccurred())
