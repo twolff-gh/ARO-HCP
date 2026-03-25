@@ -53,8 +53,7 @@ var _ = Describe("Customer", func() {
 					"failed to retrieve azure marketplace image for nodepool 'npupgrade-4-21': azure marketplace image '4.21-gen2' not found")
 			}
 
-			// TODO: decide if we want to use candidate channel group instead of stable for the nodepool upgrade
-			channelGroup := framework.DefaultOCPChannelGroup
+			channelGroup := framework.DefaultOpenshiftChannelGroup()
 			targetMinorVersion := api.Must(semver.ParseTolerant(targetMinor))
 			nodePoolMinorVersion := api.Must(semver.ParseTolerant(nodePoolMinor))
 
