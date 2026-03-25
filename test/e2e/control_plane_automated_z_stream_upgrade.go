@@ -41,6 +41,11 @@ var _ = Describe("Control plane automated z-stream upgrade with candidate channe
 				customerClusterNamePrefix        = "cluster-zstream-"
 			)
 
+			// TODO: remove once https://github.com/Azure/ARO-HCP/pull/4618 is merged
+			if version == "4.19" && time.Now().Before(time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)) {
+				Skip("4.19 z-stream test temporarily skipped: Cincinnati returns versions the RP doesn't serve")
+			}
+
 			installVersion, hasUpgradePath, err := framework.GetInstallVersionForZStreamUpgrade(ctx, "candidate", version)
 			if err != nil {
 				if cincinatti.IsCincinnatiVersionNotFoundError(err) {
