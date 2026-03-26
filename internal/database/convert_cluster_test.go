@@ -92,6 +92,11 @@ func TestRoundTripClusterInternalCosmosInternal(t *testing.T) {
 			if len(j.CustomerProperties.Etcd.DataEncryption.KeyManagementMode) == 0 {
 				j.CustomerProperties.Etcd.DataEncryption.KeyManagementMode = api.EtcdDataEncryptionKeyManagementModeTypePlatformManaged
 			}
+			if j.CustomerProperties.Etcd.DataEncryption.CustomerManaged != nil &&
+				j.CustomerProperties.Etcd.DataEncryption.CustomerManaged.Kms != nil &&
+				len(j.CustomerProperties.Etcd.DataEncryption.CustomerManaged.Kms.Visibility) == 0 {
+				j.CustomerProperties.Etcd.DataEncryption.CustomerManaged.Kms.Visibility = api.KeyVaultVisibilityPublic
+			}
 			for i := range j.CustomerProperties.ImageDigestMirrors {
 				if len(j.CustomerProperties.ImageDigestMirrors[i].MirrorSourcePolicy) == 0 {
 					j.CustomerProperties.ImageDigestMirrors[i].MirrorSourcePolicy = api.MirrorSourcePolicyAllowContactingSource
