@@ -13,6 +13,8 @@ on:
     - 'backend/**'
     - 'sessiongate/**'
     - 'image-sync/**/'
+    - 'tooling/aro-hcp-exporter/**'
+    - 'tooling/hcpctl/**'
     - 'internal/**'
     - 'test-integration/**'
 concurrency:
