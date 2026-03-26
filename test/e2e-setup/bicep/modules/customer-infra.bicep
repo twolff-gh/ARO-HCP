@@ -29,7 +29,7 @@ var randomSuffix = toLower(uniqueString(resourceGroup().id, clusterName))
 // parameter because of strict Azure requirements for KeyVault names
 // (KeyVault names are globally unique and must be between 3-24 alphanumeric
 // characters).
-var customerKeyVaultName string = 'cust-kv-${randomSuffix}'
+var customerKeyVaultName = 'cust-kv-${randomSuffix}'
 
 //
 // Network
@@ -112,6 +112,63 @@ resource etcdEncryptionKey 'Microsoft.KeyVault/vaults/keys@2024-12-01-preview' =
   properties: {
     kty: 'RSA'
     keySize: 2048
+  }
+}
+
+resource privateEndpointDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = {
+  name: 'privatelink.vaultcore.azure.net'
+  location: 'global'
+  properties: {}
+  dependsOn: [
+    privatEndpoint
+  ]
+}
+
+resource privatEndpoint 'Microsoft.Network/privateEndpoints@2023-09-01' = {
+  name: 'kv-private-endpoint'
+  properties: {
+    privateLinkServiceConnections: [
+      {
+        name: 'kv-private-endpoint'
+        properties: {
+          privateLinkServiceId: customerKeyVault.id
+          groupIds: ['privatelink.vaultcore.azure.net']
+        }
+      }
+    ]
+    subnet: {
+      id: customerVnet.properties.subnets[0].id
+    }
+  }
+}
+
+resource privateEndpointDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2023-09-01' = {
+  name: 'kv-private-ep-dns-group'
+  parent: privatEndpoint
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: 'config1'
+        properties: {
+          privateDnsZoneId: privateEndpointDnsZone.id
+        }
+      }
+    ]
+  }
+  dependsOn: [
+    privateDnsZoneVnetLink
+  ]
+}
+
+resource privateDnsZoneVnetLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
+  name: uniqueString('kv-private-dns-zone-link')
+  parent: privateEndpointDnsZone
+  location: 'global'
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: {
+      id: customerVnet.id
+    }
   }
 }
 
