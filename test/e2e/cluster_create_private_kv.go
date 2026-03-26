@@ -22,6 +22,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	azcorearm "github.com/Azure/azure-sdk-for-go/sdk/azcore/arm"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
 
 	hcpsdk20251223preview "github.com/Azure/ARO-HCP/test/sdk/v20251223preview/resourcemanager/redhatopenshifthcp/armredhatopenshifthcp"
@@ -46,6 +47,10 @@ var _ = Describe("Create HCPOpenShiftCluster with Private KeyVault", func() {
 		labels.CreateCluster,
 		func(ctx context.Context) {
 			const customerClusterName = "private-kv-cluster"
+
+			// Adding timebomb for validating permissions as we should have permissions
+			// in our built in role by this date.
+			permissionsDeadline := mustParseDate("2026-04-03")
 
 			tc := framework.NewTestContext()
 
@@ -76,6 +81,28 @@ var _ = Describe("Create HCPOpenShiftCluster with Private KeyVault", func() {
 				framework.RBACScopeResourceGroup,
 			)
 			Expect(err).NotTo(HaveOccurred())
+
+			Expect(err).NotTo(HaveOccurred())
+			if time.Now().Before(permissionsDeadline) {
+				By("validating SMI identity has correct service managed identity role binding")
+				// Parse the SMI resource ID to get the identity name and resource group
+				// This avoids double-leasing in pooled mode and works for both pooled and non-pooled
+				Expect(clusterParams.UserAssignedIdentitiesProfile).NotTo(BeNil())
+				Expect(clusterParams.UserAssignedIdentitiesProfile.ServiceManagedIdentity).NotTo(BeNil())
+
+				smiResourceID, err := azcorearm.ParseResourceID(*clusterParams.UserAssignedIdentitiesProfile.ServiceManagedIdentity)
+				Expect(err).NotTo(HaveOccurred())
+
+				// Extract identity name from the parsed resource ID
+				smiIdentityName := smiResourceID.Name
+				smiIdentityResourceGroup := smiResourceID.ResourceGroupName
+
+				// Validate the SMI Identity
+				// TODO: Remove this once we have updated rolebinding
+				// we should no longer see tests not adding permissions
+				err = tc.EnsureIdentityRoleAssignments(ctx, framework.ServiceManagedIdentityName, smiIdentityName, smiIdentityResourceGroup)
+				Expect(err).NotTo(HaveOccurred())
+			}
 
 			By("creating the HCP cluster")
 			clusterResource, err := framework.BuildHCPCluster20251223FromParams(clusterParams, tc.Location(), nil)
