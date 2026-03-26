@@ -115,7 +115,7 @@ resource etcdEncryptionKey 'Microsoft.KeyVault/vaults/keys@2024-12-01-preview' =
   }
 }
 
-resource privateEndpointDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = {
+resource privateEndpointDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = if (privateKeyVault) {
   name: 'privatelink.vaultcore.azure.net'
   location: 'global'
   properties: {}
@@ -124,7 +124,7 @@ resource privateEndpointDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' =
   ]
 }
 
-resource privateEndpoint 'Microsoft.Network/privateEndpoints@2023-09-01' = {
+resource privateEndpoint 'Microsoft.Network/privateEndpoints@2023-09-01' = if (privateKeyVault) {
   name: 'kv-private-endpoint'
   properties: {
     privateLinkServiceConnections: [
@@ -143,7 +143,7 @@ resource privateEndpoint 'Microsoft.Network/privateEndpoints@2023-09-01' = {
   location: resourceGroup().location
 }
 
-resource privateEndpointDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2023-09-01' = {
+resource privateEndpointDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2023-09-01' = if (privateKeyVault) {
   name: 'kv-private-ep-dns-group'
   parent: privateEndpoint
   properties: {
@@ -161,7 +161,7 @@ resource privateEndpointDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZ
   ]
 }
 
-resource privateDnsZoneVnetLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
+resource privateDnsZoneVnetLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = if (privateKeyVault) {
   name: uniqueString('kv-private-dns-zone-link')
   parent: privateEndpointDnsZone
   location: 'global'
