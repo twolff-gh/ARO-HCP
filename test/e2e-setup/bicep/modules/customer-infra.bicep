@@ -120,11 +120,11 @@ resource privateEndpointDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' =
   location: 'global'
   properties: {}
   dependsOn: [
-    privatEndpoint
+    privateEndpoint
   ]
 }
 
-resource privatEndpoint 'Microsoft.Network/privateEndpoints@2023-09-01' = {
+resource privateEndpoint 'Microsoft.Network/privateEndpoints@2023-09-01' = {
   name: 'kv-private-endpoint'
   properties: {
     privateLinkServiceConnections: [
@@ -132,7 +132,7 @@ resource privatEndpoint 'Microsoft.Network/privateEndpoints@2023-09-01' = {
         name: 'kv-private-endpoint'
         properties: {
           privateLinkServiceId: customerKeyVault.id
-          groupIds: ['privatelink.vaultcore.azure.net']
+          groupIds: ['vault']
         }
       }
     ]
@@ -140,11 +140,12 @@ resource privatEndpoint 'Microsoft.Network/privateEndpoints@2023-09-01' = {
       id: customerVnet.properties.subnets[0].id
     }
   }
+  location: resourceGroup().location
 }
 
 resource privateEndpointDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2023-09-01' = {
   name: 'kv-private-ep-dns-group'
-  parent: privatEndpoint
+  parent: privateEndpoint
   properties: {
     privateDnsZoneConfigs: [
       {
