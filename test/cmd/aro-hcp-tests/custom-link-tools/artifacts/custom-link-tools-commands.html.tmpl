@@ -75,7 +75,7 @@
       {{range .TestCommands}}
       <tr>
         <td>{{.TestName}}</td>
-        <td><button onclick="navigator.clipboard.writeText(this.dataset.cmd)" data-cmd="{{.Command}}">Copy</button></td>
+        <td>{{if .NoRG}}no RG{{else}}<button onclick="navigator.clipboard.writeText(this.dataset.cmd)" data-cmd="{{.Command}}">Copy</button>{{end}}</td>
       </tr>
       {{end}}
     </tbody>

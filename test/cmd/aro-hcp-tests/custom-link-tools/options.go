@@ -675,11 +675,16 @@ func getMustGatherCommands(tw TimeWindow, svcClusterName, mgmtClusterName, subsc
 type TestCommandRow struct {
 	TestName string
 	Command  string
+	NoRG     bool
 }
 
 func getPerTestMustGatherCommands(timingInfo map[string]TimingInfo, subscriptionID string, kusto KustoInfo) []TestCommandRow {
 	rows := make([]TestCommandRow, 0, len(timingInfo))
 	for testName, ti := range timingInfo {
+		if len(ti.ResourceGroupNames) == 0 {
+			rows = append(rows, TestCommandRow{TestName: testName, NoRG: true})
+			continue
+		}
 		rg := ti.ResourceGroupNames[0]
 		cmd := fmt.Sprintf(`hcpctl must-gather query --kusto %s --region %s --timestamp-min '%s' --timestamp-max '%s' --resource-group %s --subscription-id %s`,
 			kusto.KustoName, kusto.KustoRegion,
