@@ -410,10 +410,10 @@ defaults:
         zones: ""
         zoneRedundantMode: "Auto"
       userAgentPool:
-        name: 'user'
+        name: 'ud8dsv6'
         minCount: 1
         maxCount: 3
-        vmSize: 'Standard_D2s_v3'
+        vmSize: 'Standard_D8ds_v6'
         osDiskSizeGB: 32
         poolCount: 3
         zones: ""
@@ -1554,8 +1554,6 @@ clouds:
             rg: "hcp-underlay-{{ .ctx.environment }}-{{ .ctx.regionShort }}-svc"
             aks:
               name: "{{ .ctx.environment }}-{{ .ctx.regionShort }}-svc"
-              userAgentPool:
-                vmSize: Standard_D4ds_v5
               infraAgentPool:
                 vmSize: Standard_D4ds_v5
             jaeger:
