@@ -41,6 +41,12 @@ adminApi:
   k8s:
     namespace: aro-hcp-admin-api
     replicas: 2
+    resources:
+      limits:
+        memory: unlimited
+      requests:
+        cpu: 200m
+        memory: 512Mi
     serviceAccountName: admin-api
   managedIdentityName: admin-api
 administration:
@@ -62,6 +68,12 @@ arobit:
       digest: sha256:33bed43b09e3d2384c7661c74f6ed79ca53b0c25a3e28d77f139a7b9d50fbf1a
       registry: mcr.microsoft.com
       repository: oss/v2/fluent/fluent-bit
+    resources:
+      limits:
+        memory: 1Gi
+      requests:
+        cpu: 100m
+        memory: 256Mi
   kusto:
     enabled: true
     environmentName: dev
@@ -93,6 +105,12 @@ backend:
   k8s:
     namespace: aro-hcp
     replicas: 2
+    resources:
+      limits:
+        memory: unlimited
+      requests:
+        cpu: 100m
+        memory: 500Mi
     serviceAccountName: backend
   maestro:
     sourceEnvironmentIdentifier: arohcpprow
@@ -156,6 +174,12 @@ clustersService:
         maxUnavailable: 0
     namespace: clusters-service
     replicas: 3
+    resources:
+      limits:
+        memory: unlimited
+      requests:
+        cpu: 50m
+        memory: 150Mi
     serviceAccountName: clusters-service
   managedIdentityName: clusters-service
   ocpVersions:
@@ -197,6 +221,12 @@ customExporter:
     repository: arohcpmetrics
   k8s:
     namespace: aro-hcp-exporter
+    resources:
+      limits:
+        memory: unlimited
+      requests:
+        cpu: 100m
+        memory: 128Mi
     serviceAccountName: aro-hcp-exporter
   managedIdentityName: aro-hcp-exporter
 cxKeyVault:
@@ -254,6 +284,12 @@ frontend:
   k8s:
     namespace: aro-hcp
     replicas: 2
+    resources:
+      limits:
+        memory: unlimited
+      requests:
+        cpu: 100m
+        memory: 512Mi
     serviceAccountName: frontend
   managedIdentityName: frontend
   tracing:
@@ -384,6 +420,15 @@ kubeEvents:
     digest: sha256:f907f0eb97bdf12502907c5003845276d41662736d7a5462ae597eb74e337bc9
     registry: kubernetesshared.azurecr.io
     repository: shared/kube-events
+  k8s:
+    namespace: monitoring
+    resources:
+      limits:
+        memory: unlimited
+      requests:
+        cpu: 200m
+        memory: 512Mi
+    serviceAccountName: ke-serviceaccount
 kusto:
   adminGroups: ""
   autoScaleMax: 10
@@ -731,6 +776,15 @@ secretSyncController:
     digest: sha256:15768ff940ba7744d9994f8abde9ceb3ec3c5c6a024cb1256feb4d1b17c6b9f5
     registry: registry.k8s.io
     repository: secrets-store-sync/controller
+  k8s:
+    namespace: secret-sync-controller
+    resources:
+      limits:
+        memory: unlimited
+      requests:
+        cpu: 50m
+        memory: 100Mi
+    serviceAccountName: secrets-store-sync-controller-manager
   providerImage:
     digest: sha256:490c3b795cb12bd9e5a3680bb7dabd7ea02799c30b14ed960611517c5d808e6b
     registry: mcr.microsoft.com

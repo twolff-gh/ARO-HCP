@@ -3,3 +3,9 @@ image:
   repository: '{{ .kubeEvents.image.repository }}'
   digest: '{{ .kubeEvents.image.digest }}'
 enabled: {{ .kubeEvents.enabled }}
+resources:
+  requests:
+    cpu: "{{ .kubeEvents.k8s.resources.requests.cpu }}"
+    memory: "{{ .kubeEvents.k8s.resources.requests.memory }}"
+  limits:
+    memory: "{{ .kubeEvents.k8s.resources.limits.memory }}"

@@ -77,6 +77,14 @@ spec:
             runAsGroup: 0
             capabilities:
               drop: ['ALL']
+          resources:
+            requests:
+              cpu: {{ .Values.forwarder.fluentbit.resources.requests.cpu }}
+              memory: {{ .Values.forwarder.fluentbit.resources.requests.memory }}
+            {{- if ne .Values.forwarder.fluentbit.resources.limits.memory "unlimited" }}
+            limits:
+              memory: {{ .Values.forwarder.fluentbit.resources.limits.memory }}
+            {{- end }}
           volumeMounts:
             - name: varlog
               mountPath: /var/log

@@ -73,8 +73,12 @@ spec:
           protocol: TCP
         resources:
           requests:
-            cpu: 100m
-            memory: 512Mi
+            cpu: {{ .Values.deployment.resources.requests.cpu }}
+            memory: {{ .Values.deployment.resources.requests.memory }}
+          {{- if ne .Values.deployment.resources.limits.memory "unlimited" }}
+          limits:
+            memory: {{ .Values.deployment.resources.limits.memory }}
+          {{- end }}
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:

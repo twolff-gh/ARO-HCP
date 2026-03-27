@@ -115,6 +115,9 @@
         },
         "deploymentStrategy": {
           "$ref": "#/definitions/k8sDeploymentStrategy"
+        },
+        "resources": {
+          "$ref": "#/definitions/containerResources"
         }
       },
       "additionalProperties": false,
@@ -594,11 +597,11 @@
       "properties": {
         "cpu": {
           "type": "string",
-          "pattern": "^([+-]?[0-9.]+)([eEinumkKMGTP]*[-+]?[0-9]*)|(NONE)$"
+          "pattern": "^([+-]?[0-9.]+)([eEinumkKMGTP]*[-+]?[0-9]*)|(NONE)|(unlimited)$"
         },
         "memory": {
           "type": "string",
-          "pattern": "^([+-]?[0-9.]+)([eEinumkKMGTP]*[-+]?[0-9]*)|(NONE)$"
+          "pattern": "^([+-]?[0-9.]+)([eEinumkKMGTP]*[-+]?[0-9]*)|(NONE)|(unlimited)$"
         }
       }
     },
@@ -2322,6 +2325,9 @@
           "properties": {
             "image": {
               "$ref": "#/definitions/containerImage"
+            },
+            "resources": {
+              "$ref": "#/definitions/containerResources"
             }
           },
           "additionalProperties": false,
@@ -2391,6 +2397,9 @@
         },
         "enabled": {
           "type": "boolean"
+        },
+        "k8s": {
+          "$ref": "#/definitions/k8sDeployment"
         }
       },
       "additionalProperties": false,
@@ -2431,6 +2440,9 @@
         },
         "providerImage": {
           "$ref": "#/definitions/containerImage"
+        },
+        "k8s": {
+          "$ref": "#/definitions/k8sDeployment"
         }
       },
       "additionalProperties": false,

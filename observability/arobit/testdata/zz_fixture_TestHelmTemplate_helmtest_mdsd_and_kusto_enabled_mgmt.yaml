@@ -527,6 +527,12 @@ spec:
             runAsGroup: 0
             capabilities:
               drop: ['ALL']
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
           volumeMounts:
             - name: varlog
               mountPath: /var/log

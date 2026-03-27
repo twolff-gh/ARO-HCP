@@ -10,6 +10,12 @@ service:
   name: "aro-hcp-exporter"
 deployment:
   name: "aro-hcp-exporter"
+resources:
+  requests:
+    cpu: "{{ .customExporter.k8s.resources.requests.cpu }}"
+    memory: "{{ .customExporter.k8s.resources.requests.memory }}"
+  limits:
+    memory: "{{ .customExporter.k8s.resources.limits.memory }}"
 subscriptionNames:
 - "{{ .svc.subscription.key }}"
 - "{{ .mgmt.subscription.key }}"

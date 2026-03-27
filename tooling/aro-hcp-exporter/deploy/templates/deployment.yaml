@@ -68,5 +68,9 @@ spec:
             drop: ['ALL']
         resources:
           requests:
-            cpu: 100m
-            memory: 128Mi
+            cpu: {{ .Values.resources.requests.cpu }}
+            memory: {{ .Values.resources.requests.memory }}
+          {{- if ne .Values.resources.limits.memory "unlimited" }}
+          limits:
+            memory: {{ .Values.resources.limits.memory }}
+          {{- end }}

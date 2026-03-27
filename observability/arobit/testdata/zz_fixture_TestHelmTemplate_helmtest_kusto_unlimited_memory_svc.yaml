@@ -7,7 +7,7 @@ metadata:
   namespace: 'arobit'
   labels:
     app.kubernetes.io/name: 'arobit-forwarder'
-    app.kubernetes.io/instance: 'dev-westus3-svc-1-arobit'
+    app.kubernetes.io/instance: 'helmtest-kusto-unlimited-memory-svc'
   annotations:
     azure.workload.identity/client-id: '__msiClientId__'
 ---
@@ -19,7 +19,7 @@ metadata:
   namespace: 'arobit'
   labels:
     app.kubernetes.io/name: arobit-forwarder
-    app.kubernetes.io/instance: 'dev-westus3-svc-1-arobit'
+    app.kubernetes.io/instance: 'helmtest-kusto-unlimited-memory-svc'
 data:
   fluent-bit.conf: |
     @INCLUDE /forwarder/etc/service.conf
@@ -270,7 +270,7 @@ metadata:
   name: arobit-forwarder
   labels:
     app.kubernetes.io/name: arobit-forwarder
-    app.kubernetes.io/instance: 'dev-westus3-svc-1-arobit'
+    app.kubernetes.io/instance: 'helmtest-kusto-unlimited-memory-svc'
 rules:
 - apiGroups:
   - ""
@@ -290,7 +290,7 @@ metadata:
   name: arobit-forwarder
   labels:
     app.kubernetes.io/name: arobit-forwarder
-    app.kubernetes.io/instance: 'dev-westus3-svc-1-arobit'
+    app.kubernetes.io/instance: 'helmtest-kusto-unlimited-memory-svc'
 roleRef:
   kind: ClusterRole
   apiGroup: rbac.authorization.k8s.io
@@ -308,7 +308,7 @@ metadata:
   namespace: 'arobit'
   labels:
     app.kubernetes.io/name: arobit-forwarder
-    app.kubernetes.io/instance: 'dev-westus3-svc-1-arobit'
+    app.kubernetes.io/instance: 'helmtest-kusto-unlimited-memory-svc'
     app: arobit-forwarder
 spec:
   type: ClusterIP
@@ -327,7 +327,7 @@ spec:
     protocol: TCP
   selector:
     app.kubernetes.io/name: arobit-forwarder
-    app.kubernetes.io/instance: 'dev-westus3-svc-1-arobit'
+    app.kubernetes.io/instance: 'helmtest-kusto-unlimited-memory-svc'
 ---
 # Source: arobit/templates/forwarder-daemonset.yaml
 apiVersion: apps/v1
@@ -337,14 +337,14 @@ metadata:
   namespace: 'arobit'
   labels:
     app.kubernetes.io/name: arobit-forwarder
-    app.kubernetes.io/instance: 'dev-westus3-svc-1-arobit'
+    app.kubernetes.io/instance: 'helmtest-kusto-unlimited-memory-svc'
     ## Istio Labels: https://istio.io/docs/ops/deployment/requirements/
     app: arobit-forwarder
 spec:
   selector:
     matchLabels:
       app.kubernetes.io/name: arobit-forwarder
-      app.kubernetes.io/instance: 'dev-westus3-svc-1-arobit'
+      app.kubernetes.io/instance: 'helmtest-kusto-unlimited-memory-svc'
   updateStrategy:
     type: RollingUpdate
     rollingUpdate:
@@ -353,11 +353,11 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: arobit-forwarder
-        app.kubernetes.io/instance: 'dev-westus3-svc-1-arobit'
+        app.kubernetes.io/instance: 'helmtest-kusto-unlimited-memory-svc'
         app: arobit-forwarder
         azure.workload.identity/use: "true"
       annotations:
-        checksum/configmap: 87a54366b33e7efcfd6bfff0b3e195404b9e5ba72f0874f202bbe41884143dae
+        checksum/configmap: 1b2a575553cfb4cc5c11e0986c0a71150cab64a7fc97bf6dd0b8dac1f2d5012d
     spec:
       serviceAccountName: 'arobit-forwarder'
       shareProcessNamespace: true
@@ -412,8 +412,6 @@ spec:
             requests:
               cpu: 100m
               memory: 256Mi
-            limits:
-              memory: 1Gi
           volumeMounts:
             - name: varlog
               mountPath: /var/log

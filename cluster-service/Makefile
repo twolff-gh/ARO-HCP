@@ -100,7 +100,10 @@ deploy:
 	  --set ocpVersions.channelGroups.nightly.minVersion=${OCP_VERSIONS_CHANNEL_GROUPS_NIGHTLY_MIN_VERSION} \
 	  --set ocpVersions.channelGroups.nightly.maxVersion=${OCP_VERSIONS_CHANNEL_GROUPS_NIGHTLY_MAX_VERSION} \
 	  --set azureOperatorsMI.roleSetName=${OPERATOR_ROLE_SET_NAME} \
-	  --set deployment.zoneCount=${AVAILABILITY_ZONE_COUNT}
+	  --set deployment.zoneCount=${AVAILABILITY_ZONE_COUNT} \
+	  --set memoryRequest=${CS_MEMORY_REQUEST} \
+	  --set cpuRequest=${CS_CPU_REQUEST} \
+	  --set memoryLimit=${CS_MEMORY_LIMIT}
 
 deploy-cs-debug-jobs:
 	./hack/helm.sh cs-debug-jobs helm-charts/cs-debug-jobs ${NAMESPACE} \

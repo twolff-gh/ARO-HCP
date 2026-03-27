@@ -39,8 +39,12 @@ providerContainer:
     periodSeconds: 30
   resources:
     requests:
-      cpu: 50m
-      memory: 100Mi
+      cpu: "{{ .secretSyncController.k8s.resources.requests.cpu }}"
+      memory: "{{ .secretSyncController.k8s.resources.requests.memory }}"
+{{- if ne .secretSyncController.k8s.resources.limits.memory "unlimited" }}
+    limits:
+      memory: "{{ .secretSyncController.k8s.resources.limits.memory }}"
+{{- end }}
   ports:
   - containerPort: 8898
     name: metrics

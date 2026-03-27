@@ -137,12 +137,10 @@ ocpAcrResourceId: ""
 
 # Memory request.
 memoryRequest: "150Mi"
-# Memory limit.
-memoryLimit: "1Gi"
+# Memory limit. Set to "unlimited" to disable memory limits.
+memoryLimit: "unlimited"
 # CPU request.
 cpuRequest: "50m"
-# CPU limit.
-cpuLimit: "1"
 # Client ID for the CS manage identity.
 azureCsMiClientId: ""
 # Azure region the CS instance is running in.
