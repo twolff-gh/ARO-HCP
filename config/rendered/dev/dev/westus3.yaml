@@ -845,10 +845,10 @@ svc:
     userAgentPool:
       maxCount: 3
       minCount: 1
-      name: user
+      name: ud8dsv6
       osDiskSizeGB: 32
       poolCount: 3
-      vmSize: Standard_D2s_v3
+      vmSize: Standard_D8ds_v6
       zoneRedundantMode: Auto
       zones: ""
     vnetAddressPrefix: 10.128.0.0/14
