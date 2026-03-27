@@ -847,8 +847,8 @@ svc:
     userAgentPool:
       maxCount: 3
       minCount: 1
-      name: ud8dsv6
-      osDiskSizeGB: 32
+      name: u64d8ds6
+      osDiskSizeGB: 64
       poolCount: 3
       vmSize: Standard_D8ds_v6
       zoneRedundantMode: Auto
