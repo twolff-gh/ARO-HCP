@@ -256,7 +256,7 @@ spec:
           requests:
             memory: '{{ .Values.memoryRequest }}'
             cpu: '{{ .Values.cpuRequest }}'
-          {{- if ne .Values.memoryLimit "unlimited" }}
+{{- if ne .Values.memoryLimit "unlimited" }}
           limits:
             memory: '{{ .Values.memoryLimit }}'
-          {{- end }}
+{{- end }}

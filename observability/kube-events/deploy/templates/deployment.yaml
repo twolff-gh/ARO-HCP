@@ -40,8 +40,8 @@ spec:
           requests:
             cpu: {{ .Values.resources.requests.cpu }}
             memory: {{ .Values.resources.requests.memory }}
-          {{- if ne .Values.resources.limits.memory "unlimited" }}
+{{- if ne .Values.resources.limits.memory "unlimited" }}
           limits:
             memory: {{ .Values.resources.limits.memory }}
-          {{- end }}
+{{- end }}
 {{ end }}

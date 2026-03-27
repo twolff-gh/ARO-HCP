@@ -81,10 +81,10 @@ spec:
             requests:
               cpu: {{ .Values.forwarder.fluentbit.resources.requests.cpu }}
               memory: {{ .Values.forwarder.fluentbit.resources.requests.memory }}
-            {{- if ne .Values.forwarder.fluentbit.resources.limits.memory "unlimited" }}
+{{- if ne .Values.forwarder.fluentbit.resources.limits.memory "unlimited" }}
             limits:
               memory: {{ .Values.forwarder.fluentbit.resources.limits.memory }}
-            {{- end }}
+{{- end }}
           volumeMounts:
             - name: varlog
               mountPath: /var/log

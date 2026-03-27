@@ -75,10 +75,10 @@ spec:
           requests:
             cpu: {{ .Values.deployment.resources.requests.cpu }}
             memory: {{ .Values.deployment.resources.requests.memory }}
-          {{- if ne .Values.deployment.resources.limits.memory "unlimited" }}
+{{- if ne .Values.deployment.resources.limits.memory "unlimited" }}
           limits:
             memory: {{ .Values.deployment.resources.limits.memory }}
-          {{- end }}
+{{- end }}
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
