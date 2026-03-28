@@ -164,7 +164,7 @@ clustersService:
   deployDebugJobs: false
   environment: arohcpperf
   image:
-    digest: sha256:5f079a0240687e6d2214d892a61019db3a3bbb4e3afb97bcf7731633af4ce7d8
+    digest: sha256:b47789207a8e2d7457eacb1314ddcd07ab6cde06a40a322e8e286e20435e516c
     registry: quay.io
     repository: app-sre/aro-hcp-clusters-service
   k8s:
