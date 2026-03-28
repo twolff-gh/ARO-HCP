@@ -499,6 +499,12 @@ maestro:
     k8s:
       namespace: maestro
       replicas: 3
+      resources:
+        limits:
+          memory: unlimited
+        requests:
+          cpu: 200m
+          memory: 512Mi
       serviceAccountName: maestro
     loglevel: 2
     managedIdentityName: maestro-server

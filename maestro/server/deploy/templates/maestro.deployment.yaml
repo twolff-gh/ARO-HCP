@@ -129,11 +129,12 @@ spec:
         - --db-auth-method={{ if .Values.database.azureDb }}az-entra{{ else }}password{{ end }}
         resources:
           requests:
-            cpu: '{{ .Values.deployment.requests.cpu }}'
-            memory: '{{ .Values.deployment.requests.memory }}'
+            cpu: '{{ .Values.deployment.resources.requests.cpu }}'
+            memory: '{{ .Values.deployment.resources.requests.memory }}'
+{{- if ne .Values.deployment.resources.limits.memory "unlimited" }}
           limits:
-            cpu: '{{ .Values.deployment.limits.cpu }}'
-            memory: '{{ .Values.deployment.limits.memory }}'
+            memory: '{{ .Values.deployment.resources.limits.memory }}'
+{{- end }}
         livenessProbe:
           httpGet:
             path: /healthcheck

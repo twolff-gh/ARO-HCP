@@ -774,6 +774,12 @@ defaults:
         replicas: 3
         namespace: maestro
         serviceAccountName: maestro
+        resources:
+          requests:
+            cpu: 200m
+            memory: 512Mi
+          limits:
+            memory: unlimited
     agent:
       consumerName: "hcp-underlay-{{ .ctx.regionShort }}-mgmt-{{ .ctx.stamp }}" # [env-unique]
       loglevel: 2
