@@ -337,12 +337,12 @@ func installCiliumChart(ctx context.Context, kubeconfigPath, clusterName string)
 			"confPath":  "/var/run/multus/cni/net.d",
 		},
 		"kubeProxyReplacement": true,
-		"k8sServiceHost":       framework.DefaultK8sServiceIP,
+		"k8sServiceHost":       "172.20.0.1",
 		"k8sServicePort":       6443,
 		"ipam": map[string]any{
 			"mode": "cluster-pool",
 			"operator": map[string]any{
-				"clusterPoolIPv4PodCIDRList": framework.DefaultPodCIDR,
+				"clusterPoolIPv4PodCIDRList": "10.255.0.0/16",
 				"clusterPoolIPv4MaskSize":    23,
 			},
 		},
