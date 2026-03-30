@@ -35,9 +35,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
-	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	"k8s.io/utils/ptr"
 
 	azcorearm "github.com/Azure/azure-sdk-for-go/sdk/azcore/arm"
@@ -51,8 +48,8 @@ import (
 	"github.com/Azure/ARO-HCP/test/util/verifiers"
 )
 
-var _ = Describe("Create HCPOpenShiftCluster with Cilium CNI", func() {
-	It("should create a no-CNI cluster with private etcd and install Cilium",
+var _ = Describe("Customer", func() {
+	It("should be able to create a no-CNI private cluster with a private key vault, a nodepool and install cilium CNI successfully",
 		labels.RequireNothing,
 		labels.Critical,
 		labels.Positive,
@@ -168,31 +165,18 @@ var _ = Describe("Create HCPOpenShiftCluster with Cilium CNI", func() {
 			GinkgoLogr.Info("Disabled kube-proxy via network operator patch")
 
 			By("installing Cilium via helm SDK")
-			kubeconfigPath, err := writeKubeconfigFromRESTConfig(adminRESTConfig)
-			Expect(err).NotTo(HaveOccurred())
-			defer os.Remove(kubeconfigPath)
-
-			err = installCiliumChart(ctx, kubeconfigPath, customerClusterName)
+			kubeconfigContent, err := framework.GenerateKubeconfig(adminRESTConfig)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("waiting for Cilium pods to be running")
-			Eventually(func() error {
-				pods, err := kubeClient.CoreV1().Pods("kube-system").List(ctx, metav1.ListOptions{
-					LabelSelector: "k8s-app=cilium",
-				})
-				if err != nil {
-					return fmt.Errorf("failed to list cilium pods: %w", err)
-				}
-				if len(pods.Items) == 0 {
-					return fmt.Errorf("no cilium pods found")
-				}
-				for _, pod := range pods.Items {
-					if pod.Status.Phase != "Running" {
-						return fmt.Errorf("cilium pod %s is in phase %s", pod.Name, pod.Status.Phase)
-					}
-				}
-				return nil
-			}, 10*time.Minute, 30*time.Second).Should(Succeed(), "cilium pods should be running")
+			kubeconfigFile, err := os.CreateTemp("", "kubeconfig-cilium-*.yaml")
+			Expect(err).NotTo(HaveOccurred())
+			defer os.Remove(kubeconfigFile.Name())
+			_, err = kubeconfigFile.WriteString(kubeconfigContent)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(kubeconfigFile.Close()).To(Succeed())
+
+			err = installCiliumChart(ctx, kubeconfigFile.Name(), customerClusterName)
+			Expect(err).NotTo(HaveOccurred())
 
 			By("creating the node pool via v20251223preview")
 			nodePoolParams := framework.NewDefaultNodePoolParams()
@@ -229,6 +213,25 @@ var _ = Describe("Create HCPOpenShiftCluster with Cilium CNI", func() {
 			By("verifying nodes become Ready with Cilium CNI")
 			err = verifiers.VerifyHCPCluster(ctx, adminRESTConfig, verifiers.VerifyNodesReady())
 			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for Cilium pods to be running")
+			Eventually(func() error {
+				pods, err := kubeClient.CoreV1().Pods("kube-system").List(ctx, metav1.ListOptions{
+					LabelSelector: "k8s-app=cilium",
+				})
+				if err != nil {
+					return fmt.Errorf("failed to list cilium pods: %w", err)
+				}
+				if len(pods.Items) == 0 {
+					return fmt.Errorf("no cilium pods found")
+				}
+				for _, pod := range pods.Items {
+					if pod.Status.Phase != "Running" {
+						return fmt.Errorf("cilium pod %s is in phase %s", pod.Name, pod.Status.Phase)
+					}
+				}
+				return nil
+			}, 10*time.Minute, 30*time.Second).Should(Succeed(), "cilium pods should be running")
 
 			By("creating a test pod that logs a known message")
 			const (
@@ -295,6 +298,7 @@ func installCiliumChart(ctx context.Context, kubeconfigPath, clusterName string)
 		releaseNamespace = "kube-system"
 		ciliumRepoURL    = "https://helm.cilium.io/"
 		chartName        = "cilium"
+		chartVersion     = "1.19.2"
 	)
 
 	// Initialize helm action configuration with the kubeconfig
@@ -311,10 +315,9 @@ func installCiliumChart(ctx context.Context, kubeconfigPath, clusterName string)
 	installClient := action.NewInstall(actionCfg)
 	installClient.ReleaseName = releaseName
 	installClient.Namespace = releaseNamespace
-	installClient.WaitStrategy = kube.StatusWatcherStrategy
-	installClient.WaitForJobs = true
-	installClient.Timeout = 10 * time.Minute
 	installClient.RepoURL = ciliumRepoURL
+	installClient.WaitStrategy = kube.HookOnlyStrategy
+	installClient.Version = chartVersion
 
 	settings := cli.New()
 	chartPath, err := installClient.LocateChart(chartName, settings)
@@ -334,12 +337,12 @@ func installCiliumChart(ctx context.Context, kubeconfigPath, clusterName string)
 			"confPath":  "/var/run/multus/cni/net.d",
 		},
 		"kubeProxyReplacement": true,
-		"k8sServiceHost":       "172.20.0.1",
+		"k8sServiceHost":       framework.DefaultK8sServiceIP,
 		"k8sServicePort":       6443,
 		"ipam": map[string]any{
 			"mode": "cluster-pool",
 			"operator": map[string]any{
-				"clusterPoolIPv4PodCIDRList": "10.132.0.0/14",
+				"clusterPoolIPv4PodCIDRList": framework.DefaultPodCIDR,
 				"clusterPoolIPv4MaskSize":    23,
 			},
 		},
@@ -359,64 +362,4 @@ func installCiliumChart(ctx context.Context, kubeconfigPath, clusterName string)
 	}
 
 	return nil
-}
-
-// writeKubeconfigFromRESTConfig creates a temporary kubeconfig file from a rest.Config
-// for use with the helm SDK which requires a kubeconfig file path.
-func writeKubeconfigFromRESTConfig(cfg *rest.Config) (string, error) {
-	kubeconfig := clientcmdapi.NewConfig()
-
-	cluster := clientcmdapi.NewCluster()
-	cluster.Server = cfg.Host
-	if len(cfg.CAData) > 0 {
-		cluster.CertificateAuthorityData = cfg.CAData
-	}
-	if cfg.Insecure {
-		cluster.InsecureSkipTLSVerify = true
-	}
-	kubeconfig.Clusters["default"] = cluster
-
-	authInfo := clientcmdapi.NewAuthInfo()
-	if cfg.BearerToken != "" {
-		authInfo.Token = cfg.BearerToken
-	}
-	if len(cfg.CertData) > 0 {
-		authInfo.ClientCertificateData = cfg.CertData
-	}
-	if len(cfg.KeyData) > 0 {
-		authInfo.ClientKeyData = cfg.KeyData
-	}
-	if cfg.Username != "" {
-		authInfo.Username = cfg.Username
-		authInfo.Password = cfg.Password
-	}
-	kubeconfig.AuthInfos["default"] = authInfo
-
-	kubeCtx := clientcmdapi.NewContext()
-	kubeCtx.Cluster = "default"
-	kubeCtx.AuthInfo = "default"
-	kubeconfig.Contexts["default"] = kubeCtx
-	kubeconfig.CurrentContext = "default"
-
-	tmpFile, err := os.CreateTemp("", "kubeconfig-*.yaml")
-	if err != nil {
-		return "", fmt.Errorf("failed to create temp kubeconfig: %w", err)
-	}
-
-	content, err := clientcmd.Write(*kubeconfig)
-	if err != nil {
-		os.Remove(tmpFile.Name())
-		return "", fmt.Errorf("failed to serialize kubeconfig: %w", err)
-	}
-
-	if _, err := tmpFile.Write(content); err != nil {
-		os.Remove(tmpFile.Name())
-		return "", fmt.Errorf("failed to write kubeconfig: %w", err)
-	}
-	if err := tmpFile.Close(); err != nil {
-		os.Remove(tmpFile.Name())
-		return "", fmt.Errorf("failed to close kubeconfig: %w", err)
-	}
-
-	return tmpFile.Name(), nil
 }
