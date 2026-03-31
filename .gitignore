@@ -33,3 +33,4 @@ report.json
 _artifacts
 must-gather-*
 /hcpctl
+triage-*/

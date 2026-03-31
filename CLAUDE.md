@@ -112,6 +112,10 @@ Custom tools in `tooling/`:
 - `secret-sync` - Secret management utilities
 - `prometheus-rules` - Monitoring rule generation
 
+## CI Triage (hack/ci-triage/)
+
+Use `/triage` to triage CI failures (e.g., `/triage int`, `/triage pr 4618`).
+
 ## Documentation
 
 Key documentation files:
