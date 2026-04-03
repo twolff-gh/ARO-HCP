@@ -1055,6 +1055,10 @@ type UserAssignedIdentitiesProfile struct {
 	// REQUIRED; Represents the information associated to an Azure User-Assigned Managed Identity whose purpose is to perform
 	// service level actions.
 	ServiceManagedIdentity *string
+
+	// Represents the information associated to an Azure User-Assigned Managed Identity whose purpose is to perform image pulls
+	// from Azure Container Registries.
+	AcrPullIdentity *string
 }
 
 // UserAssignedIdentitiesProfileUpdate - Represents the information related to Azure User-Assigned managed identities needed

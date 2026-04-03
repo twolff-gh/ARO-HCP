@@ -825,6 +825,42 @@ func TestValidateClusterCreate(t *testing.T) {
 				{message: "identity is not assigned to this resource", fieldPath: "customerProperties.platform.operatorsAuthentication.userAssignedIdentities.serviceManagedIdentity"},
 			},
 		},
+		{
+			name: "valid cluster with acrPullIdentity - create",
+			cluster: func() *api.HCPOpenShiftCluster {
+				c := createValidCluster()
+				acrPullIdentityID := "/subscriptions/0465bc32-c654-41b8-8d87-9815d7abe8f6/resourceGroups/some-resource-group/providers/Microsoft.ManagedIdentity/userAssignedIdentities/acr-pull-identity"
+				c.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.AcrPullIdentity = api.Must(azcorearm.ParseResourceID(acrPullIdentityID))
+				c.Identity.UserAssignedIdentities[acrPullIdentityID] = &arm.UserAssignedIdentity{}
+				return c
+			}(),
+			expectErrors: []expectedError{},
+		},
+		{
+			name: "acrPullIdentity wrong subscription - create",
+			cluster: func() *api.HCPOpenShiftCluster {
+				c := createValidCluster()
+				c.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.AcrPullIdentity = api.Must(azcorearm.ParseResourceID("/subscriptions/different-sub/resourceGroups/test-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/acr-pull-identity"))
+				return c
+			}(),
+			expectErrors: []expectedError{
+				{message: "must be in the same Azure subscription", fieldPath: "customerProperties.platform.operatorsAuthentication.userAssignedIdentities.acrPullIdentity"},
+				{message: "identity is not assigned to this resource", fieldPath: "customerProperties.platform.operatorsAuthentication.userAssignedIdentities.acrPullIdentity"},
+			},
+		},
+		{
+			name: "acrPullIdentity not in Identity map - create",
+			cluster: func() *api.HCPOpenShiftCluster {
+				c := createValidCluster()
+				acrPullIdentityID := "/subscriptions/0465bc32-c654-41b8-8d87-9815d7abe8f6/resourceGroups/some-resource-group/providers/Microsoft.ManagedIdentity/userAssignedIdentities/acr-pull-identity"
+				c.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.AcrPullIdentity = api.Must(azcorearm.ParseResourceID(acrPullIdentityID))
+				// Deliberately NOT adding to c.Identity.UserAssignedIdentities
+				return c
+			}(),
+			expectErrors: []expectedError{
+				{message: "identity is not assigned to this resource", fieldPath: "customerProperties.platform.operatorsAuthentication.userAssignedIdentities.acrPullIdentity"},
+			},
+		},
 		// Tests for network CIDR overlap validation
 		{
 			name: "machine CIDR overlaps with service CIDR - create",
@@ -1332,6 +1368,29 @@ func TestValidateClusterUpdate(t *testing.T) {
 				{message: "field is immutable", fieldPath: "customerProperties.platform.operatorsAuthentication.userAssignedIdentities.controlPlaneOperators"},
 				{message: "must be in the same Azure subscription", fieldPath: "customerProperties.platform.operatorsAuthentication.userAssignedIdentities.controlPlaneOperators[test-operator]"},
 				{message: "must be in the same Azure subscription", fieldPath: "customerProperties.platform.operatorsAuthentication.userAssignedIdentities.controlPlaneOperators[test-operator-2]"},
+			},
+		},
+		{
+			name: "acrPullIdentity immutable - update",
+			newCluster: func() *api.HCPOpenShiftCluster {
+				c := createValidCluster()
+				acrPullIdentityID := "/subscriptions/0465bc32-c654-41b8-8d87-9815d7abe8f6/resourceGroups/some-resource-group/providers/Microsoft.ManagedIdentity/userAssignedIdentities/acr-pull-new"
+				c.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.AcrPullIdentity = api.Must(azcorearm.ParseResourceID(acrPullIdentityID))
+				c.Identity.UserAssignedIdentities[acrPullIdentityID] = &arm.UserAssignedIdentity{}
+				return c
+			}(),
+			oldCluster: func() *api.HCPOpenShiftCluster {
+				c := createValidCluster()
+				acrPullIdentityID := "/subscriptions/0465bc32-c654-41b8-8d87-9815d7abe8f6/resourceGroups/some-resource-group/providers/Microsoft.ManagedIdentity/userAssignedIdentities/acr-pull-old"
+				c.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.AcrPullIdentity = api.Must(azcorearm.ParseResourceID(acrPullIdentityID))
+				c.Identity.UserAssignedIdentities[acrPullIdentityID] = &arm.UserAssignedIdentity{}
+				return c
+			}(),
+			expectErrors: []expectedError{
+				{message: "field is immutable", fieldPath: "customerProperties.platform"},
+				{message: "field is immutable", fieldPath: "customerProperties.platform.operatorsAuthentication"},
+				{message: "field is immutable", fieldPath: "customerProperties.platform.operatorsAuthentication.userAssignedIdentities"},
+				{message: "field is immutable", fieldPath: "customerProperties.platform.operatorsAuthentication.userAssignedIdentities.acrPullIdentity"},
 			},
 		},
 		{

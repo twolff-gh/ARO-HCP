@@ -118,6 +118,11 @@ func validateOperatorAuthenticationAgainstIdentities(ctx context.Context, op ope
 		tallyIdentity(serviceManagedIdentity, fldPath)
 	}
 
+	if acrPullIdentity := newCluster.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.AcrPullIdentity; acrPullIdentity != nil {
+		fldPath := field.NewPath("customerProperties", "platform", "operatorsAuthentication", "userAssignedIdentities", "acrPullIdentity")
+		tallyIdentity(acrPullIdentity, fldPath)
+	}
+
 	if newCluster.Identity != nil {
 		for identity := range newCluster.Identity.UserAssignedIdentities {
 			fldPath := field.NewPath("identity", "userAssignedIdentities").Key(identity)
@@ -175,6 +180,10 @@ func validateResourceIDsAgainstClusterID(ctx context.Context, op operation.Opera
 	errs = append(errs, ValidateUserAssignedIdentityLocation(ctx, op,
 		field.NewPath("customerProperties", "platform", "operatorsAuthentication", "userAssignedIdentities", "serviceManagedIdentity"),
 		newCluster.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.ServiceManagedIdentity, nil,
+		newCluster.ID.SubscriptionID, newCluster.CustomerProperties.Platform.ManagedResourceGroup)...)
+	errs = append(errs, ValidateUserAssignedIdentityLocation(ctx, op,
+		field.NewPath("customerProperties", "platform", "operatorsAuthentication", "userAssignedIdentities", "acrPullIdentity"),
+		newCluster.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.AcrPullIdentity, nil,
 		newCluster.ID.SubscriptionID, newCluster.CustomerProperties.Platform.ManagedResourceGroup)...)
 
 	return errs
@@ -607,6 +616,9 @@ var (
 	toUserAssignedIdentitiesServiceManagedIdentity = func(oldObj *api.UserAssignedIdentitiesProfile) *azcorearm.ResourceID {
 		return oldObj.ServiceManagedIdentity
 	}
+	toUserAssignedIdentitiesAcrPullIdentity = func(oldObj *api.UserAssignedIdentitiesProfile) *azcorearm.ResourceID {
+		return oldObj.AcrPullIdentity
+	}
 )
 
 func validateUserAssignedIdentitiesProfile(ctx context.Context, op operation.Operation, fldPath *field.Path, newObj, oldObj *api.UserAssignedIdentitiesProfile) field.ErrorList {
@@ -651,6 +663,10 @@ func validateUserAssignedIdentitiesProfile(ctx context.Context, op operation.Ope
 	//ServiceManagedIdentity string            `json:"serviceManagedIdentity,omitempty"`
 	errs = append(errs, validate.ImmutableByReflect(ctx, op, fldPath.Child("serviceManagedIdentity"), newObj.ServiceManagedIdentity, safe.Field(oldObj, toUserAssignedIdentitiesServiceManagedIdentity))...)
 	errs = append(errs, RestrictedResourceIDWithResourceGroup(ctx, op, fldPath.Child("serviceManagedIdentity"), newObj.ServiceManagedIdentity, safe.Field(oldObj, toUserAssignedIdentitiesServiceManagedIdentity), "Microsoft.ManagedIdentity/userAssignedIdentities")...)
+
+	//AcrPullIdentity *azcorearm.ResourceID `json:"acrPullIdentity,omitempty"`
+	errs = append(errs, validate.ImmutableByReflect(ctx, op, fldPath.Child("acrPullIdentity"), newObj.AcrPullIdentity, safe.Field(oldObj, toUserAssignedIdentitiesAcrPullIdentity))...)
+	errs = append(errs, RestrictedResourceIDWithResourceGroup(ctx, op, fldPath.Child("acrPullIdentity"), newObj.AcrPullIdentity, safe.Field(oldObj, toUserAssignedIdentitiesAcrPullIdentity), "Microsoft.ManagedIdentity/userAssignedIdentities")...)
 
 	return errs
 }

@@ -1746,6 +1746,10 @@ func (in *UserAssignedIdentitiesProfile) DeepCopyInto(out *UserAssignedIdentitie
 		in, out := &in.ServiceManagedIdentity, &out.ServiceManagedIdentity
 		*out = arm.DeepCopyResourceID(*in)
 	}
+	if in.AcrPullIdentity != nil {
+		in, out := &in.AcrPullIdentity, &out.AcrPullIdentity
+		*out = arm.DeepCopyResourceID(*in)
+	}
 	return
 }
 
