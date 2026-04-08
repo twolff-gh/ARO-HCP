@@ -835,3 +835,55 @@ func controllerInformerTestCase() informerTestCase {
 		},
 	}
 }
+
+func Test_resourceGroupIndexFunc(t *testing.T) {
+	rid := mustParseResourceID(t, "/subscriptions/sub123/resourceGroups/rg456/providers/Microsoft.RedHatOpenShift/hcpOpenShiftClusters/myCluster")
+	expectedIndex := api.ToResourceGroupResourceIDString("sub123", "rg456")
+
+	tests := []struct {
+		name    string
+		obj     any
+		want    []string
+		wantErr bool
+	}{
+		{
+			name: "CosmosMetadataAccessor with ResourceID",
+			obj:  &arm.CosmosMetadata{ResourceID: rid},
+			want: []string{expectedIndex},
+		},
+		{
+			name: "CosmosMetadataAccessor with nil ResourceID",
+			obj:  &arm.CosmosMetadata{},
+			want: nil,
+		},
+		{
+			name: "CosmosPersistable with ResourceID",
+			obj: &api.HCPOpenShiftCluster{
+				TrackedResource: arm.NewTrackedResource(rid, "eastus"),
+			},
+			want: []string{expectedIndex},
+		},
+		{
+			name: "CosmosPersistable with nil ResourceID",
+			obj:  &api.HCPOpenShiftCluster{},
+			want: nil,
+		},
+		{
+			name:    "unexpected type",
+			obj:     "not a valid type",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := resourceGroupIndexFunc(tt.obj)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tt.want, got)
+		})
+	}
+}
