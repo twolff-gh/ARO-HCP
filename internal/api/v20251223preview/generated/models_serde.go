@@ -2570,6 +2570,7 @@ func (t *TokenRequiredClaim) UnmarshalJSON(data []byte) error {
 func (u UserAssignedIdentitiesProfile) MarshalJSON() ([]byte, error) {
 	objectMap := make(map[string]any)
 	populate(objectMap, "acrPullIdentity", u.AcrPullIdentity)
+	populate(objectMap, "acrPullRegistries", u.AcrPullRegistries)
 	populate(objectMap, "controlPlaneOperators", u.ControlPlaneOperators)
 	populate(objectMap, "dataPlaneOperators", u.DataPlaneOperators)
 	populate(objectMap, "serviceManagedIdentity", u.ServiceManagedIdentity)
@@ -2587,6 +2588,9 @@ func (u *UserAssignedIdentitiesProfile) UnmarshalJSON(data []byte) error {
 		switch key {
 		case "acrPullIdentity":
 			err = unpopulate(val, "AcrPullIdentity", &u.AcrPullIdentity)
+			delete(rawMsg, key)
+		case "acrPullRegistries":
+			err = unpopulate(val, "AcrPullRegistries", &u.AcrPullRegistries)
 			delete(rawMsg, key)
 		case "controlPlaneOperators":
 			err = unpopulate(val, "ControlPlaneOperators", &u.ControlPlaneOperators)

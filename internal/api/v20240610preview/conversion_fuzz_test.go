@@ -91,8 +91,9 @@ func TestRoundTripInternalExternalInternal(t *testing.T) {
 		},
 		func(j *api.UserAssignedIdentitiesProfile, c randfill.Continue) {
 			c.FillNoCustom(j)
-			// AcrPullIdentity was added in v2025_12_23_preview and does not exist in v2024_06_10_preview
+			// AcrPullIdentity and AcrPullRegistries were added in v2025_12_23_preview and do not exist in v2024_06_10_preview
 			j.AcrPullIdentity = nil
+			j.AcrPullRegistries = nil
 		},
 		func(j *api.KmsEncryptionProfile, c randfill.Continue) {
 			c.FillNoCustom(j)

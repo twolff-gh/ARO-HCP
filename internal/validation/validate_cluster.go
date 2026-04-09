@@ -619,6 +619,9 @@ var (
 	toUserAssignedIdentitiesAcrPullIdentity = func(oldObj *api.UserAssignedIdentitiesProfile) *azcorearm.ResourceID {
 		return oldObj.AcrPullIdentity
 	}
+	toUserAssignedIdentitiesAcrPullRegistries = func(oldObj *api.UserAssignedIdentitiesProfile) []string {
+		return oldObj.AcrPullRegistries
+	}
 )
 
 func validateUserAssignedIdentitiesProfile(ctx context.Context, op operation.Operation, fldPath *field.Path, newObj, oldObj *api.UserAssignedIdentitiesProfile) field.ErrorList {
@@ -667,6 +670,48 @@ func validateUserAssignedIdentitiesProfile(ctx context.Context, op operation.Ope
 	//AcrPullIdentity *azcorearm.ResourceID `json:"acrPullIdentity,omitempty"`
 	errs = append(errs, validate.ImmutableByReflect(ctx, op, fldPath.Child("acrPullIdentity"), newObj.AcrPullIdentity, safe.Field(oldObj, toUserAssignedIdentitiesAcrPullIdentity))...)
 	errs = append(errs, RestrictedResourceIDWithResourceGroup(ctx, op, fldPath.Child("acrPullIdentity"), newObj.AcrPullIdentity, safe.Field(oldObj, toUserAssignedIdentitiesAcrPullIdentity), "Microsoft.ManagedIdentity/userAssignedIdentities")...)
+
+	//AcrPullRegistries []string `json:"acrPullRegistries,omitempty"`
+	errs = append(errs, validate.ImmutableByReflect(ctx, op, fldPath.Child("acrPullRegistries"), newObj.AcrPullRegistries, safe.Field(oldObj, toUserAssignedIdentitiesAcrPullRegistries))...)
+	errs = append(errs, validateAcrPullRegistries(ctx, op, fldPath, newObj)...)
+
+	return errs
+}
+
+func validateAcrPullRegistries(ctx context.Context, op operation.Operation, fldPath *field.Path, profile *api.UserAssignedIdentitiesProfile) field.ErrorList {
+	errs := field.ErrorList{}
+
+	hasIdentity := profile.AcrPullIdentity != nil
+	hasRegistries := len(profile.AcrPullRegistries) > 0
+
+	// Both or neither
+	if hasIdentity && !hasRegistries {
+		errs = append(errs, field.Required(fldPath.Child("acrPullRegistries"), "must be specified when acrPullIdentity is present"))
+	}
+	if !hasIdentity && hasRegistries {
+		errs = append(errs, field.Required(fldPath.Child("acrPullIdentity"), "must be specified when acrPullRegistries is present"))
+	}
+
+	if hasRegistries {
+		if len(profile.AcrPullRegistries) > 20 {
+			errs = append(errs, field.TooMany(fldPath.Child("acrPullRegistries"), len(profile.AcrPullRegistries), 20))
+		}
+		seen := make(map[string]bool, len(profile.AcrPullRegistries))
+		for i, registry := range profile.AcrPullRegistries {
+			if len(registry) == 0 {
+				errs = append(errs, field.Required(fldPath.Child("acrPullRegistries").Index(i), "registry hostname cannot be empty"))
+				continue
+			}
+			if len(registry) > 253 {
+				errs = append(errs, field.TooLongMaxLength(fldPath.Child("acrPullRegistries").Index(i), registry, 253))
+			}
+			lower := strings.ToLower(registry)
+			if seen[lower] {
+				errs = append(errs, field.Duplicate(fldPath.Child("acrPullRegistries").Index(i), registry))
+			}
+			seen[lower] = true
+		}
+	}
 
 	return errs
 }

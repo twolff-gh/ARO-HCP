@@ -1750,6 +1750,11 @@ func (in *UserAssignedIdentitiesProfile) DeepCopyInto(out *UserAssignedIdentitie
 		in, out := &in.AcrPullIdentity, &out.AcrPullIdentity
 		*out = arm.DeepCopyResourceID(*in)
 	}
+	if in.AcrPullRegistries != nil {
+		in, out := &in.AcrPullRegistries, &out.AcrPullRegistries
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	return
 }
 

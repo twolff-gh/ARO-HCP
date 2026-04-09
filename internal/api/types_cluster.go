@@ -206,6 +206,7 @@ type UserAssignedIdentitiesProfile struct {
 	DataPlaneOperators     map[string]*azcorearm.ResourceID `json:"dataPlaneOperators,omitempty"`
 	ServiceManagedIdentity *azcorearm.ResourceID            `json:"serviceManagedIdentity,omitempty"`
 	AcrPullIdentity        *azcorearm.ResourceID            `json:"acrPullIdentity,omitempty"`
+	AcrPullRegistries      []string                         `json:"acrPullRegistries,omitempty"`
 }
 
 // ClusterImageRegistryProfile - OpenShift cluster image registry

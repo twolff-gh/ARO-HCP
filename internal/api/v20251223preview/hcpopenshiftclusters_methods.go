@@ -282,12 +282,19 @@ func newUserAssignedIdentitiesProfile(from *api.UserAssignedIdentitiesProfile) g
 	if from == nil {
 		return generated.UserAssignedIdentitiesProfile{}
 	}
-	return generated.UserAssignedIdentitiesProfile{
+	out := generated.UserAssignedIdentitiesProfile{
 		ControlPlaneOperators:  api.ResourceIDMapToStringPtrMap(from.ControlPlaneOperators),
 		DataPlaneOperators:     api.ResourceIDMapToStringPtrMap(from.DataPlaneOperators),
 		ServiceManagedIdentity: api.ResourceIDToStringPtr(from.ServiceManagedIdentity),
 		AcrPullIdentity:        api.ResourceIDToStringPtr(from.AcrPullIdentity),
 	}
+	if from.AcrPullRegistries != nil {
+		out.AcrPullRegistries = make([]*string, len(from.AcrPullRegistries))
+		for i := range from.AcrPullRegistries {
+			out.AcrPullRegistries[i] = &from.AcrPullRegistries[i]
+		}
+	}
+	return out
 }
 
 func newSystemData(from *arm.SystemData) generated.SystemData {
@@ -694,6 +701,14 @@ func normalizeUserAssignedIdentities(fldPath *field.Path, p *generated.UserAssig
 			errs = append(errs, field.Invalid(fldPath.Child("acrPullIdentity"), *p.AcrPullIdentity, err.Error()))
 		} else {
 			out.AcrPullIdentity = resourceID
+		}
+	}
+	if p.AcrPullRegistries != nil {
+		out.AcrPullRegistries = make([]string, 0, len(p.AcrPullRegistries))
+		for _, r := range p.AcrPullRegistries {
+			if r != nil {
+				out.AcrPullRegistries = append(out.AcrPullRegistries, *r)
+			}
 		}
 	}
 	return errs

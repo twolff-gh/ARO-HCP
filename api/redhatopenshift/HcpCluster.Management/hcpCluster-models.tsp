@@ -502,6 +502,16 @@ model UserAssignedIdentitiesProfile {
   @added(Versions.v2025_12_23_preview)
   @visibility(Lifecycle.Read, Lifecycle.Create)
   acrPullIdentity?: UserAssignedIdentityResourceId;
+
+  /** The list of Azure Container Registry hostnames from which images can be
+   * pulled using the acrPullIdentity managed identity. Required when acrPullIdentity
+   * is specified. Each entry should be a fully qualified ACR hostname
+   * (e.g., "myregistry.azurecr.io"). */
+  @added(Versions.v2025_12_23_preview)
+  @visibility(Lifecycle.Read, Lifecycle.Create)
+  @minItems(1)
+  @maxItems(20)
+  acrPullRegistries?: string[];
 }
 
 scalar UserAssignedIdentityResourceId

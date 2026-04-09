@@ -831,6 +831,7 @@ func TestValidateClusterCreate(t *testing.T) {
 				c := createValidCluster()
 				acrPullIdentityID := "/subscriptions/0465bc32-c654-41b8-8d87-9815d7abe8f6/resourceGroups/some-resource-group/providers/Microsoft.ManagedIdentity/userAssignedIdentities/acr-pull-identity"
 				c.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.AcrPullIdentity = api.Must(azcorearm.ParseResourceID(acrPullIdentityID))
+				c.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.AcrPullRegistries = []string{"myregistry.azurecr.io"}
 				c.Identity.UserAssignedIdentities[acrPullIdentityID] = &arm.UserAssignedIdentity{}
 				return c
 			}(),
@@ -841,6 +842,7 @@ func TestValidateClusterCreate(t *testing.T) {
 			cluster: func() *api.HCPOpenShiftCluster {
 				c := createValidCluster()
 				c.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.AcrPullIdentity = api.Must(azcorearm.ParseResourceID("/subscriptions/different-sub/resourceGroups/test-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/acr-pull-identity"))
+				c.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.AcrPullRegistries = []string{"myregistry.azurecr.io"}
 				return c
 			}(),
 			expectErrors: []expectedError{
@@ -854,6 +856,7 @@ func TestValidateClusterCreate(t *testing.T) {
 				c := createValidCluster()
 				acrPullIdentityID := "/subscriptions/0465bc32-c654-41b8-8d87-9815d7abe8f6/resourceGroups/some-resource-group/providers/Microsoft.ManagedIdentity/userAssignedIdentities/acr-pull-identity"
 				c.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.AcrPullIdentity = api.Must(azcorearm.ParseResourceID(acrPullIdentityID))
+				c.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.AcrPullRegistries = []string{"myregistry.azurecr.io"}
 				// Deliberately NOT adding to c.Identity.UserAssignedIdentities
 				return c
 			}(),
@@ -1376,6 +1379,7 @@ func TestValidateClusterUpdate(t *testing.T) {
 				c := createValidCluster()
 				acrPullIdentityID := "/subscriptions/0465bc32-c654-41b8-8d87-9815d7abe8f6/resourceGroups/some-resource-group/providers/Microsoft.ManagedIdentity/userAssignedIdentities/acr-pull-new"
 				c.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.AcrPullIdentity = api.Must(azcorearm.ParseResourceID(acrPullIdentityID))
+				c.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.AcrPullRegistries = []string{"myregistry.azurecr.io"}
 				c.Identity.UserAssignedIdentities[acrPullIdentityID] = &arm.UserAssignedIdentity{}
 				return c
 			}(),
@@ -1383,6 +1387,7 @@ func TestValidateClusterUpdate(t *testing.T) {
 				c := createValidCluster()
 				acrPullIdentityID := "/subscriptions/0465bc32-c654-41b8-8d87-9815d7abe8f6/resourceGroups/some-resource-group/providers/Microsoft.ManagedIdentity/userAssignedIdentities/acr-pull-old"
 				c.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.AcrPullIdentity = api.Must(azcorearm.ParseResourceID(acrPullIdentityID))
+				c.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.AcrPullRegistries = []string{"myregistry.azurecr.io"}
 				c.Identity.UserAssignedIdentities[acrPullIdentityID] = &arm.UserAssignedIdentity{}
 				return c
 			}(),

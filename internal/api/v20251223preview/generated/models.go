@@ -1059,6 +1059,9 @@ type UserAssignedIdentitiesProfile struct {
 	// Represents the information associated to an Azure User-Assigned Managed Identity whose purpose is to perform image pulls
 	// from Azure Container Registries.
 	AcrPullIdentity *string
+
+	// The list of Azure Container Registry hostnames from which images can be pulled using the acrPullIdentity managed identity.
+	AcrPullRegistries []*string
 }
 
 // UserAssignedIdentitiesProfileUpdate - Represents the information related to Azure User-Assigned managed identities needed
