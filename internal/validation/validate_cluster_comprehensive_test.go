@@ -864,6 +864,109 @@ func TestValidateClusterCreate(t *testing.T) {
 				{message: "identity is not assigned to this resource", fieldPath: "customerProperties.platform.operatorsAuthentication.userAssignedIdentities.acrPullIdentity"},
 			},
 		},
+		{
+			name: "acrPullIdentity without acrPullRegistries - create",
+			cluster: func() *api.HCPOpenShiftCluster {
+				c := createValidCluster()
+				acrPullIdentityID := "/subscriptions/0465bc32-c654-41b8-8d87-9815d7abe8f6/resourceGroups/some-resource-group/providers/Microsoft.ManagedIdentity/userAssignedIdentities/acr-pull-identity"
+				c.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.AcrPullIdentity = api.Must(azcorearm.ParseResourceID(acrPullIdentityID))
+				c.Identity.UserAssignedIdentities[acrPullIdentityID] = &arm.UserAssignedIdentity{}
+				return c
+			}(),
+			expectErrors: []expectedError{
+				{message: "must be specified when acrPullIdentity is present", fieldPath: "customerProperties.platform.operatorsAuthentication.userAssignedIdentities.acrPullRegistries"},
+			},
+		},
+		{
+			name: "acrPullRegistries without acrPullIdentity - create",
+			cluster: func() *api.HCPOpenShiftCluster {
+				c := createValidCluster()
+				c.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.AcrPullRegistries = []string{"myregistry.azurecr.io"}
+				return c
+			}(),
+			expectErrors: []expectedError{
+				{message: "must be specified when acrPullRegistries is present", fieldPath: "customerProperties.platform.operatorsAuthentication.userAssignedIdentities.acrPullIdentity"},
+			},
+		},
+		{
+			name: "acrPullRegistries exceeds max of 20 - create",
+			cluster: func() *api.HCPOpenShiftCluster {
+				c := createValidCluster()
+				acrPullIdentityID := "/subscriptions/0465bc32-c654-41b8-8d87-9815d7abe8f6/resourceGroups/some-resource-group/providers/Microsoft.ManagedIdentity/userAssignedIdentities/acr-pull-identity"
+				c.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.AcrPullIdentity = api.Must(azcorearm.ParseResourceID(acrPullIdentityID))
+				c.Identity.UserAssignedIdentities[acrPullIdentityID] = &arm.UserAssignedIdentity{}
+				registries := make([]string, 21)
+				for i := range registries {
+					registries[i] = fmt.Sprintf("registry%d.azurecr.io", i)
+				}
+				c.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.AcrPullRegistries = registries
+				return c
+			}(),
+			expectErrors: []expectedError{
+				{message: "must have at most 20 items", fieldPath: "customerProperties.platform.operatorsAuthentication.userAssignedIdentities.acrPullRegistries"},
+			},
+		},
+		{
+			name: "acrPullRegistries with empty hostname - create",
+			cluster: func() *api.HCPOpenShiftCluster {
+				c := createValidCluster()
+				acrPullIdentityID := "/subscriptions/0465bc32-c654-41b8-8d87-9815d7abe8f6/resourceGroups/some-resource-group/providers/Microsoft.ManagedIdentity/userAssignedIdentities/acr-pull-identity"
+				c.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.AcrPullIdentity = api.Must(azcorearm.ParseResourceID(acrPullIdentityID))
+				c.Identity.UserAssignedIdentities[acrPullIdentityID] = &arm.UserAssignedIdentity{}
+				c.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.AcrPullRegistries = []string{"myregistry.azurecr.io", ""}
+				return c
+			}(),
+			expectErrors: []expectedError{
+				{message: "registry hostname cannot be empty", fieldPath: "customerProperties.platform.operatorsAuthentication.userAssignedIdentities.acrPullRegistries[1]"},
+			},
+		},
+		{
+			name: "acrPullRegistries with hostname exceeding 253 chars - create",
+			cluster: func() *api.HCPOpenShiftCluster {
+				c := createValidCluster()
+				acrPullIdentityID := "/subscriptions/0465bc32-c654-41b8-8d87-9815d7abe8f6/resourceGroups/some-resource-group/providers/Microsoft.ManagedIdentity/userAssignedIdentities/acr-pull-identity"
+				c.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.AcrPullIdentity = api.Must(azcorearm.ParseResourceID(acrPullIdentityID))
+				c.Identity.UserAssignedIdentities[acrPullIdentityID] = &arm.UserAssignedIdentity{}
+				longHostname := make([]byte, 254)
+				for i := range longHostname {
+					longHostname[i] = 'a'
+				}
+				c.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.AcrPullRegistries = []string{string(longHostname)}
+				return c
+			}(),
+			expectErrors: []expectedError{
+				{message: "may not be more than 253", fieldPath: "customerProperties.platform.operatorsAuthentication.userAssignedIdentities.acrPullRegistries[0]"},
+			},
+		},
+		{
+			name: "acrPullRegistries with duplicate hostnames - create",
+			cluster: func() *api.HCPOpenShiftCluster {
+				c := createValidCluster()
+				acrPullIdentityID := "/subscriptions/0465bc32-c654-41b8-8d87-9815d7abe8f6/resourceGroups/some-resource-group/providers/Microsoft.ManagedIdentity/userAssignedIdentities/acr-pull-identity"
+				c.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.AcrPullIdentity = api.Must(azcorearm.ParseResourceID(acrPullIdentityID))
+				c.Identity.UserAssignedIdentities[acrPullIdentityID] = &arm.UserAssignedIdentity{}
+				c.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.AcrPullRegistries = []string{"myregistry.azurecr.io", "MyRegistry.azurecr.io"}
+				return c
+			}(),
+			expectErrors: []expectedError{
+				{message: "Duplicate value", fieldPath: "customerProperties.platform.operatorsAuthentication.userAssignedIdentities.acrPullRegistries[1]"},
+			},
+		},
+		{
+			name: "acrPullIdentity wrong resource type - create",
+			cluster: func() *api.HCPOpenShiftCluster {
+				c := createValidCluster()
+				wrongTypeID := "/subscriptions/0465bc32-c654-41b8-8d87-9815d7abe8f6/resourceGroups/some-resource-group/providers/Microsoft.Network/virtualNetworks/not-an-identity"
+				c.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.AcrPullIdentity = api.Must(azcorearm.ParseResourceID(wrongTypeID))
+				c.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.AcrPullRegistries = []string{"myregistry.azurecr.io"}
+				c.Identity.UserAssignedIdentities[wrongTypeID] = &arm.UserAssignedIdentity{}
+				return c
+			}(),
+			expectErrors: []expectedError{
+				{message: "resource ID must reference an instance of type", fieldPath: "customerProperties.platform.operatorsAuthentication.userAssignedIdentities.acrPullIdentity"},
+				{message: "resource ID must reference an instance of type", fieldPath: "identity.userAssignedIdentities"},
+			},
+		},
 		// Tests for network CIDR overlap validation
 		{
 			name: "machine CIDR overlaps with service CIDR - create",
@@ -1396,6 +1499,31 @@ func TestValidateClusterUpdate(t *testing.T) {
 				{message: "field is immutable", fieldPath: "customerProperties.platform.operatorsAuthentication"},
 				{message: "field is immutable", fieldPath: "customerProperties.platform.operatorsAuthentication.userAssignedIdentities"},
 				{message: "field is immutable", fieldPath: "customerProperties.platform.operatorsAuthentication.userAssignedIdentities.acrPullIdentity"},
+			},
+		},
+		{
+			name: "acrPullRegistries immutable - update",
+			newCluster: func() *api.HCPOpenShiftCluster {
+				c := createValidCluster()
+				acrPullIdentityID := "/subscriptions/0465bc32-c654-41b8-8d87-9815d7abe8f6/resourceGroups/some-resource-group/providers/Microsoft.ManagedIdentity/userAssignedIdentities/acr-pull-identity"
+				c.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.AcrPullIdentity = api.Must(azcorearm.ParseResourceID(acrPullIdentityID))
+				c.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.AcrPullRegistries = []string{"newregistry.azurecr.io"}
+				c.Identity.UserAssignedIdentities[acrPullIdentityID] = &arm.UserAssignedIdentity{}
+				return c
+			}(),
+			oldCluster: func() *api.HCPOpenShiftCluster {
+				c := createValidCluster()
+				acrPullIdentityID := "/subscriptions/0465bc32-c654-41b8-8d87-9815d7abe8f6/resourceGroups/some-resource-group/providers/Microsoft.ManagedIdentity/userAssignedIdentities/acr-pull-identity"
+				c.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.AcrPullIdentity = api.Must(azcorearm.ParseResourceID(acrPullIdentityID))
+				c.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.AcrPullRegistries = []string{"oldregistry.azurecr.io"}
+				c.Identity.UserAssignedIdentities[acrPullIdentityID] = &arm.UserAssignedIdentity{}
+				return c
+			}(),
+			expectErrors: []expectedError{
+				{message: "field is immutable", fieldPath: "customerProperties.platform"},
+				{message: "field is immutable", fieldPath: "customerProperties.platform.operatorsAuthentication"},
+				{message: "field is immutable", fieldPath: "customerProperties.platform.operatorsAuthentication.userAssignedIdentities"},
+				{message: "field is immutable", fieldPath: "customerProperties.platform.operatorsAuthentication.userAssignedIdentities.acrPullRegistries"},
 			},
 		},
 		{

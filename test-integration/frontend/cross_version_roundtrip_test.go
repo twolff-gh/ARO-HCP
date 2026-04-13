@@ -209,11 +209,14 @@ func clusterCreatePayload(clusterName, apiVersion string) []byte {
 }`, clusterName, subscriptionID, subscriptionID))
 
 	case v2025:
-		// v2025 payload — includes all optional fields (autoscaling, nodeDrainTimeoutMinutes)
+		// v2025 payload — includes all optional fields (autoscaling, nodeDrainTimeoutMinutes, acrPullIdentity, acrPullRegistries)
+		acrPullIdentityID := fmt.Sprintf("/subscriptions/%s/resourceGroups/bar/providers/Microsoft.ManagedIdentity/userAssignedIdentities/acr-pull", subscriptionID)
 		return []byte(fmt.Sprintf(`{
   "identity": {
     "type": "UserAssigned",
-    "userAssignedIdentities": {}
+    "userAssignedIdentities": {
+      "%s": {}
+    }
   },
   "name": "%s",
   "properties": {
@@ -245,6 +248,12 @@ func clusterCreatePayload(clusterName, apiVersion string) []byte {
     "platform": {
       "managedResourceGroup": "managed-rg-xvrt",
       "networkSecurityGroupId": "/subscriptions/%s/resourceGroups/bar/providers/Microsoft.Network/networkSecurityGroups/nsg",
+      "operatorsAuthentication": {
+        "userAssignedIdentities": {
+          "acrPullIdentity": "%s",
+          "acrPullRegistries": ["myregistry.azurecr.io", "otherregistry.azurecr.io"]
+        }
+      },
       "outboundType": "LoadBalancer",
       "subnetId": "/subscriptions/%s/resourceGroups/bar/providers/Microsoft.Network/virtualNetworks/vnet/subnets/subnet",
       "vnetIntegrationSubnetId": "/subscriptions/%s/resourceGroups/bar/providers/Microsoft.Network/virtualNetworks/vnet/subnets/swift-subnet"
@@ -258,7 +267,7 @@ func clusterCreatePayload(clusterName, apiVersion string) []byte {
     "env": "test"
   },
   "type": "Microsoft.RedHatOpenShift/hcpOpenShiftClusters"
-}`, clusterName, subscriptionID, subscriptionID, subscriptionID))
+}`, acrPullIdentityID, clusterName, subscriptionID, acrPullIdentityID, subscriptionID, subscriptionID))
 
 	default:
 		panic(fmt.Sprintf("unsupported apiVersion: %s", apiVersion))
