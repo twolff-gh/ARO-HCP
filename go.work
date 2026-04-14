@@ -19,5 +19,6 @@ use (
 	./tooling/prometheus-rules
 	./tooling/secret-sync
 	./tooling/templatize
+	./tooling/blast-radius
 	./tooling/yamlwrap
 )
