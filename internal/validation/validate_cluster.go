@@ -684,10 +684,8 @@ func validateAcrPullRegistries(ctx context.Context, op operation.Operation, fldP
 	hasIdentity := profile.AcrPullIdentity != nil
 	hasRegistries := len(profile.AcrPullRegistries) > 0
 
-	// Both or neither
-	if hasIdentity && !hasRegistries {
-		errs = append(errs, field.Required(fldPath.Child("acrPullRegistries"), "must be specified when acrPullIdentity is present"))
-	}
+	// Registries require identity (but identity alone is valid — HyperShift
+	// defaults to wildcard registries when none are specified).
 	if !hasIdentity && hasRegistries {
 		errs = append(errs, field.Required(fldPath.Child("acrPullIdentity"), "must be specified when acrPullRegistries is present"))
 	}

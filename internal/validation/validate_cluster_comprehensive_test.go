@@ -873,9 +873,7 @@ func TestValidateClusterCreate(t *testing.T) {
 				c.Identity.UserAssignedIdentities[acrPullIdentityID] = &arm.UserAssignedIdentity{}
 				return c
 			}(),
-			expectErrors: []expectedError{
-				{message: "must be specified when acrPullIdentity is present", fieldPath: "customerProperties.platform.operatorsAuthentication.userAssignedIdentities.acrPullRegistries"},
-			},
+			expectErrors: []expectedError{},
 		},
 		{
 			name: "acrPullRegistries without acrPullIdentity - create",
