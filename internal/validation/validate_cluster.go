@@ -691,8 +691,10 @@ func validateAcrPullRegistries(ctx context.Context, op operation.Operation, fldP
 	}
 
 	if hasRegistries {
-		if len(profile.AcrPullRegistries) > 20 {
-			errs = append(errs, field.TooMany(fldPath.Child("acrPullRegistries"), len(profile.AcrPullRegistries), 20))
+		// HyperShift CRD allows MaxItems=16 user-provided registries; the
+		// controller appends 4 default wildcard entries (*.azurecr.io, etc.).
+		if len(profile.AcrPullRegistries) > 16 {
+			errs = append(errs, field.TooMany(fldPath.Child("acrPullRegistries"), len(profile.AcrPullRegistries), 16))
 		}
 		seen := make(map[string]bool, len(profile.AcrPullRegistries))
 		for i, registry := range profile.AcrPullRegistries {

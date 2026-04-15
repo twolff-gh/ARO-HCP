@@ -887,13 +887,13 @@ func TestValidateClusterCreate(t *testing.T) {
 			},
 		},
 		{
-			name: "acrPullRegistries exceeds max of 20 - create",
+			name: "acrPullRegistries exceeds max of 16 - create",
 			cluster: func() *api.HCPOpenShiftCluster {
 				c := createValidCluster()
 				acrPullIdentityID := "/subscriptions/0465bc32-c654-41b8-8d87-9815d7abe8f6/resourceGroups/some-resource-group/providers/Microsoft.ManagedIdentity/userAssignedIdentities/acr-pull-identity"
 				c.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.AcrPullIdentity = api.Must(azcorearm.ParseResourceID(acrPullIdentityID))
 				c.Identity.UserAssignedIdentities[acrPullIdentityID] = &arm.UserAssignedIdentity{}
-				registries := make([]string, 21)
+				registries := make([]string, 17)
 				for i := range registries {
 					registries[i] = fmt.Sprintf("registry%d.azurecr.io", i)
 				}
@@ -901,7 +901,7 @@ func TestValidateClusterCreate(t *testing.T) {
 				return c
 			}(),
 			expectErrors: []expectedError{
-				{message: "must have at most 20 items", fieldPath: "customerProperties.platform.operatorsAuthentication.userAssignedIdentities.acrPullRegistries"},
+				{message: "must have at most 16 items", fieldPath: "customerProperties.platform.operatorsAuthentication.userAssignedIdentities.acrPullRegistries"},
 			},
 		},
 		{
