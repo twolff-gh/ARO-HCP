@@ -705,6 +705,9 @@ func validateAcrPullRegistries(ctx context.Context, op operation.Operation, fldP
 			if len(registry) > 253 {
 				errs = append(errs, field.TooLongMaxLength(fldPath.Child("acrPullRegistries").Index(i), registry, 253))
 			}
+			if !acrRegistryHostnameRegex.MatchString(registry) {
+				errs = append(errs, field.Invalid(fldPath.Child("acrPullRegistries").Index(i), registry, acrRegistryHostnameErrorString))
+			}
 			lower := strings.ToLower(registry)
 			if seen[lower] {
 				errs = append(errs, field.Duplicate(fldPath.Child("acrPullRegistries").Index(i), registry))

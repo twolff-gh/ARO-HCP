@@ -248,6 +248,13 @@ var (
 	imageDigestMirroredRegistry            = `^((?:[a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9])(?:(?:\.(?:[a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9]))+)?(?::[0-9]+)?)(?:(?:/[a-z0-9]+(?:(?:(?:[._]|__|[-]*)[a-z0-9]+)+)?)+)?$`
 	imageDigestMirroredRegistryRegex       = regexp.MustCompile(imageDigestMirroredRegistry)
 	imageDigestMirroredRegistryErrorString = `(must be a valid mirrored image registry)`
+
+	// acrRegistryHostname matches the HyperShift CRD pattern for ACR registry entries:
+	// optional wildcard prefix (*.) followed by a valid hostname with at least two labels.
+	// Examples: "myregistry.azurecr.io", "*.azurecr.io"
+	acrRegistryHostname            = `^(\*\.)?[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?)+$`
+	acrRegistryHostnameRegex       = regexp.MustCompile(acrRegistryHostname)
+	acrRegistryHostnameErrorString = `must be a valid hostname (e.g., "myregistry.azurecr.io") or wildcard pattern (e.g., "*.azurecr.io")`
 )
 
 func MatchesRegex(_ context.Context, _ operation.Operation, fldPath *field.Path, value, _ *string, regex *regexp.Regexp, errorString string) field.ErrorList {

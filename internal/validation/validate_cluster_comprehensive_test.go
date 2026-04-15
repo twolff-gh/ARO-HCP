@@ -934,7 +934,34 @@ func TestValidateClusterCreate(t *testing.T) {
 			}(),
 			expectErrors: []expectedError{
 				{message: "may not be more than 253", fieldPath: "customerProperties.platform.operatorsAuthentication.userAssignedIdentities.acrPullRegistries[0]"},
+				{message: "must be a valid hostname", fieldPath: "customerProperties.platform.operatorsAuthentication.userAssignedIdentities.acrPullRegistries[0]"},
 			},
+		},
+		{
+			name: "acrPullRegistries with invalid hostname format - create",
+			cluster: func() *api.HCPOpenShiftCluster {
+				c := createValidCluster()
+				acrPullIdentityID := "/subscriptions/0465bc32-c654-41b8-8d87-9815d7abe8f6/resourceGroups/some-resource-group/providers/Microsoft.ManagedIdentity/userAssignedIdentities/acr-pull-identity"
+				c.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.AcrPullIdentity = api.Must(azcorearm.ParseResourceID(acrPullIdentityID))
+				c.Identity.UserAssignedIdentities[acrPullIdentityID] = &arm.UserAssignedIdentity{}
+				c.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.AcrPullRegistries = []string{"not!!!valid"}
+				return c
+			}(),
+			expectErrors: []expectedError{
+				{message: "must be a valid hostname", fieldPath: "customerProperties.platform.operatorsAuthentication.userAssignedIdentities.acrPullRegistries[0]"},
+			},
+		},
+		{
+			name: "acrPullRegistries with valid wildcard pattern - create",
+			cluster: func() *api.HCPOpenShiftCluster {
+				c := createValidCluster()
+				acrPullIdentityID := "/subscriptions/0465bc32-c654-41b8-8d87-9815d7abe8f6/resourceGroups/some-resource-group/providers/Microsoft.ManagedIdentity/userAssignedIdentities/acr-pull-identity"
+				c.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.AcrPullIdentity = api.Must(azcorearm.ParseResourceID(acrPullIdentityID))
+				c.Identity.UserAssignedIdentities[acrPullIdentityID] = &arm.UserAssignedIdentity{}
+				c.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.AcrPullRegistries = []string{"*.azurecr.io"}
+				return c
+			}(),
+			expectErrors: []expectedError{},
 		},
 		{
 			name: "acrPullRegistries with duplicate hostnames - create",
