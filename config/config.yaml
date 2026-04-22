@@ -277,6 +277,9 @@ defaults:
     kustoConsumerGroupName: "AuditLogsToKusto"
     kustoDataConnectionName: "{{ .ctx.environment }}-{{ .ctx.region }}-auditlogs"
     rg: "{{ .ctx.region }}-shared-resources"
+  cosmosKustoDataConnection:
+    enabled: false
+    dataConnectionNamePrefix: "{{ .ctx.environment }}-{{ .ctx.region }}-cosmos"
   # Hypershift
   hypershift:
     image:

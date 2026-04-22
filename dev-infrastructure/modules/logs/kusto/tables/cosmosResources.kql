@@ -1,0 +1,26 @@
+.create-merge table cosmosResources (
+  id: string,
+  partitionKey: string,
+  resourceType: string,
+  provisioningState: string,
+  activeOperationId: string,
+  resourceId: dynamic,
+  _ts: long,
+  _timestamp: datetime,
+  rawDocument: dynamic
+)
+
+.create-or-alter table cosmosResources ingestion json mapping 'CosmosResourcesMapping'
+```
+[
+  {"column":"id","path":"$.id"},
+  {"column":"partitionKey","path":"$.partitionKey"},
+  {"column":"resourceType","path":"$.resourceType"},
+  {"column":"provisioningState","path":"$.properties.provisioningState"},
+  {"column":"activeOperationId","path":"$.properties.activeOperationId"},
+  {"column":"resourceId","path":"$.properties.resourceId"},
+  {"column":"_ts","path":"$._ts"},
+  {"column":"_timestamp","path":"$._ts","transform":"DateTimeFromUnixSeconds"},
+  {"column":"rawDocument","path":"$"}
+]
+```

@@ -206,6 +206,9 @@ clustersService:
   tracing:
     address: ""
     exporter: ""
+cosmosKustoDataConnection:
+  dataConnectionNamePrefix: cspr-westus3-cosmos
+  enabled: false
 customExporter:
   enabledCollectors: service-tag-usage,kusto-logs-current
   image:

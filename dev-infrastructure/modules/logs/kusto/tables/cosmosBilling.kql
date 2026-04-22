@@ -1,0 +1,30 @@
+.create-merge table cosmosBilling (
+  id: string,
+  subscriptionId: string,
+  resourceId: dynamic,
+  tenantId: string,
+  location: string,
+  managedResourceGroup: string,
+  creationTime: datetime,
+  deletionTime: datetime,
+  _ts: long,
+  _timestamp: datetime,
+  rawDocument: dynamic
+)
+
+.create-or-alter table cosmosBilling ingestion json mapping 'CosmosBillingMapping'
+```
+[
+  {"column":"id","path":"$.id"},
+  {"column":"subscriptionId","path":"$.subscriptionId"},
+  {"column":"resourceId","path":"$.resourceId"},
+  {"column":"tenantId","path":"$.tenantId"},
+  {"column":"location","path":"$.location"},
+  {"column":"managedResourceGroup","path":"$.managedResourceGroup"},
+  {"column":"creationTime","path":"$.creationTime"},
+  {"column":"deletionTime","path":"$.deletionTime"},
+  {"column":"_ts","path":"$._ts"},
+  {"column":"_timestamp","path":"$._ts","transform":"DateTimeFromUnixSeconds"},
+  {"column":"rawDocument","path":"$"}
+]
+```

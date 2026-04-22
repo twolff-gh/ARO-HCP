@@ -206,6 +206,9 @@ clustersService:
   tracing:
     address: http://ingest.observability:4318
     exporter: otlp
+cosmosKustoDataConnection:
+  dataConnectionNamePrefix: pers-westus3-cosmos
+  enabled: false
 customExporter:
   enabledCollectors: service-tag-usage,kusto-logs-current
   image:
