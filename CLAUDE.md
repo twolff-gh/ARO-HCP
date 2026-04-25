@@ -111,6 +111,7 @@ Custom tools in `tooling/`:
 - `templatize` - Pipeline template processing
 - `secret-sync` - Secret management utilities
 - `prometheus-rules` - Monitoring rule generation
+- `citriage` — CI fleet triage tool. 5 commands: `triage RUN` (end-to-end single-run structural extraction with cascade detection, error deduplication, and cross-run correlation), `survey` (fleet health, co-failure detection, EV2 hash rates, chronicity, region breakdown), `dig RUN WHAT` (single-run artifacts: `tests`, `output`, `azure`, `metrics`, `podinfo`, `events`, `provision`, `alerts`, `pool`, `classify`, `steptime`, `extract`, `links`), `search PATTERN` (cross-run pattern matching), `diff V1 V2` (deploy version diff). Powers the `/cidig` and `/ciscan` skills. `/ciscan` takes a scope argument: `periodic` (production health), `presubmit` (PR velocity), or `all`. Zero external deps. Build: `go build -o /tmp/citriage ./tooling/citriage/`. All output is JSON.
 
 ## Documentation
 

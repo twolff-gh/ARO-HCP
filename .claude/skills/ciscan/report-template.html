@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CI Fleet Assessment</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface-raised: #1c2128;
+    --border: #30363d;
+    --border-light: #21262d;
+    --text: #e6edf3;
+    --text-muted: #8b949e;
+    --text-dim: #656d76;
+    --green: #3fb950;
+    --green-bg: rgba(63,185,80,0.10);
+    --red: #f85149;
+    --red-bg: rgba(248,81,73,0.10);
+    --yellow: #d29922;
+    --yellow-bg: rgba(210,153,34,0.10);
+    --blue: #58a6ff;
+    --blue-bg: rgba(88,166,255,0.06);
+    --purple: #bc8cff;
+    --purple-bg: rgba(188,140,255,0.08);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    background: var(--bg); color: var(--text);
+    line-height: 1.6; padding: 0; margin: 0;
+  }
+  .container { max-width: 1020px; margin: 0 auto; padding: 2rem; }
+  a { color: var(--blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code { font-family: 'SF Mono','Fira Code','Cascadia Code',monospace; font-size: 0.85em; background: var(--surface-raised); padding: 0.15em 0.4em; border-radius: 4px; }
+  h1 { font-size: 1.6rem; font-weight: 600; }
+  h2 { font-size: 1.2rem; font-weight: 600; margin-top: 2rem; margin-bottom: 1rem; padding-bottom: 0.4rem; border-bottom: 1px solid var(--border); }
+  .subtitle { color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1.5rem; }
+  .filter-bar {
+    position: sticky; top: 0; z-index: 100;
+    background: rgba(13,17,23,0.92); backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border); padding: 0.6rem 0;
+  }
+  .filter-inner {
+    max-width: 1020px; margin: 0 auto; padding: 0 2rem;
+    display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
+  }
+  .filter-label { font-size: 0.75rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-right: 0.25rem; }
+  .filter-btn {
+    font-size: 0.75rem; font-weight: 500; padding: 0.25rem 0.65rem; border-radius: 999px;
+    border: 1px solid var(--border); background: transparent; color: var(--text-muted); cursor: pointer; transition: all 0.15s;
+  }
+  .filter-btn:hover { border-color: var(--text-muted); color: var(--text); }
+  .filter-btn.active { border-color: var(--blue); color: var(--blue); background: var(--blue-bg); }
+  .fleet-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(175px, 1fr)); gap: 0.65rem; }
+  .env-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    padding: 0.85rem 1rem; position: relative; overflow: hidden; transition: opacity 0.2s;
+  }
+  .env-card.hidden { display: none; }
+  .env-card::before { content:''; position:absolute; top:0; left:0; right:0; height:3px; }
+  .env-card.critical::before { background: var(--red); }
+  .env-card.warning::before { background: var(--yellow); }
+  .env-card.ok::before { background: var(--green); }
+  .env-name { font-weight:600; font-size:0.72rem; text-transform:uppercase; letter-spacing:0.06em; color:var(--text-muted); }
+  .env-rate { font-size:1.6rem; font-weight:700; margin:0.15rem 0; }
+  .env-rate.critical { color:var(--red); }
+  .env-rate.warning { color:var(--yellow); }
+  .env-rate.ok { color:var(--green); }
+  .env-detail { font-size:0.75rem; color:var(--text-muted); }
+  .sparkline { display:flex; align-items:flex-end; gap:2px; height:28px; margin-top:0.4rem; }
+  .spark-bar { flex:1; border-radius:2px 2px 0 0; min-width:6px; }
+  .spark-bar.green { background:var(--green); opacity:0.7; }
+  .spark-bar.red { background:var(--red); opacity:0.7; }
+  .spark-bar.yellow { background:var(--yellow); opacity:0.7; }
+  .spark-labels { display:flex; gap:2px; margin-top:2px; }
+  .spark-labels span { flex:1; text-align:center; font-size:0.55rem; color:var(--text-dim); min-width:6px; }
+  .finding {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    padding: 1.15rem 1.25rem; margin-bottom: 0.85rem; transition: opacity 0.2s;
+  }
+  .finding.hidden { display: none; }
+  .finding-header { display:flex; align-items:center; gap:0.5rem; margin-bottom:0.65rem; flex-wrap: wrap; }
+  .badge {
+    display:inline-block; font-size:0.65rem; font-weight:700;
+    padding:0.12rem 0.45rem; border-radius:999px; text-transform:uppercase; letter-spacing:0.05em; flex-shrink:0;
+  }
+  .badge-p1 { background:var(--red-bg); color:var(--red); border:1px solid rgba(248,81,73,0.3); }
+  .badge-p2 { background:var(--yellow-bg); color:var(--yellow); border:1px solid rgba(210,153,34,0.3); }
+  .badge-p3 { background:var(--blue-bg); color:var(--blue); border:1px solid rgba(88,166,255,0.2); }
+  .env-tag {
+    font-size: 0.6rem; font-weight: 600; padding: 0.1rem 0.4rem; border-radius: 4px;
+    text-transform: uppercase; letter-spacing: 0.04em;
+    background: var(--surface-raised); color: var(--text-muted); border: 1px solid var(--border);
+  }
+  .finding-title { font-weight:600; font-size:0.95rem; }
+  .error-block {
+    background: rgba(248,81,73,0.05); border-left: 3px solid var(--red);
+    padding: 0.5rem 0.75rem; margin: 0.65rem 0;
+    font-family: 'SF Mono','Fira Code','Cascadia Code',monospace;
+    font-size: 0.72rem; color: var(--text-muted);
+    overflow-x: auto; white-space: pre-wrap; word-break: break-all; border-radius: 0 4px 4px 0;
+  }
+  .dims { display: grid; grid-template-columns: 130px 1fr; gap: 0.2rem 0.65rem; font-size: 0.8rem; margin: 0.65rem 0; }
+  .dim-label { color:var(--text-muted); font-weight:500; }
+  .dim-value { color:var(--text); }
+  .hypothesis, .action-item { font-size: 0.82rem; margin-top: 0.65rem; padding: 0.55rem 0.8rem; border-radius: 6px; }
+  .hypothesis { background: var(--purple-bg); border-left: 3px solid var(--purple); }
+  .action-item { background: var(--green-bg); border-left: 3px solid var(--green); }
+  .section-label { font-weight:600; font-size:0.7rem; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:0.2rem; }
+  .hypothesis .section-label { color: var(--purple); }
+  .action-item .section-label { color: var(--green); }
+  details { margin-top: 0.6rem; border: 1px solid var(--border-light); border-radius: 6px; background: var(--surface-raised); font-size: 0.8rem; }
+  details[open] { background: var(--bg); }
+  summary {
+    padding: 0.5rem 0.75rem; cursor: pointer; font-weight: 600; font-size: 0.75rem;
+    color: var(--text-muted); list-style: none; display: flex; align-items: center; gap: 0.4rem; user-select: none;
+  }
+  summary::-webkit-details-marker { display:none; }
+  summary::before { content:'▸'; font-size: 0.65rem; transition: transform 0.15s; display: inline-block; }
+  details[open] > summary::before { transform: rotate(90deg); }
+  summary:hover { color: var(--text); }
+  .expand-content { padding: 0.5rem 0.75rem; border-top: 1px solid var(--border-light); }
+  .failure-row { display: grid; grid-template-columns: 40px 1fr auto; gap: 0.4rem; padding: 0.4rem 0; border-bottom: 1px solid var(--border-light); align-items: start; font-size: 0.78rem; }
+  .failure-row:last-child { border-bottom: none; }
+  .failure-count { font-weight: 700; font-size: 0.75rem; color: var(--red); background: var(--red-bg); text-align: center; border-radius: 4px; padding: 0.1rem 0; }
+  .failure-name { color: var(--text); word-break: break-word; }
+  .failure-error { color: var(--text-dim); font-family: monospace; font-size: 0.68rem; margin-top: 0.15rem; word-break: break-all; }
+  .failure-link { font-size: 0.7rem; white-space: nowrap; }
+  .evidence-list { counter-reset: evidence; padding: 0; }
+  .evidence-step { display: grid; grid-template-columns: 24px 1fr; gap: 0.3rem; padding: 0.35rem 0; border-bottom: 1px solid var(--border-light); font-size: 0.78rem; }
+  .evidence-step:last-child { border-bottom: none; }
+  .evidence-num { counter-increment: evidence; font-weight: 700; font-size: 0.7rem; color: var(--blue); text-align: right; }
+  .evidence-num::before { content: counter(evidence); }
+  .evidence-text { color: var(--text-muted); }
+  .evidence-text strong { color: var(--text); font-weight: 500; }
+  .deploy-timeline { font-size: 0.75rem; font-family: 'SF Mono','Fira Code','Cascadia Code',monospace; }
+  .deploy-row { display: grid; grid-template-columns: 18px 90px 100px 1fr; gap: 0.3rem; padding: 0.2rem 0; align-items: center; border-bottom: 1px solid var(--border-light); }
+  .deploy-row:last-child { border-bottom: none; }
+  .deploy-icon { font-size: 0.85rem; text-align: center; }
+  .deploy-icon.pass { color: var(--green); }
+  .deploy-icon.fail { color: var(--red); }
+  .deploy-ts { color: var(--text-muted); }
+  .deploy-hash { color: var(--text); }
+  .deploy-meta { color: var(--text-dim); font-size: 0.68rem; }
+  .deploy-new { font-size: 0.6rem; font-weight: 700; color: var(--yellow); background: var(--yellow-bg); padding: 0.05rem 0.35rem; border-radius: 3px; margin-left: 0.3rem; font-family: -apple-system, sans-serif; }
+  .deploy-env-label { font-weight: 600; font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 0.5rem; margin-bottom: 0.2rem; }
+  .deploy-env-label:first-child { margin-top: 0; }
+  .pr-table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
+  .pr-table th { text-align: left; font-weight: 600; font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; padding: 0.3rem 0.5rem; border-bottom: 1px solid var(--border); }
+  .pr-table td { padding: 0.3rem 0.5rem; border-bottom: 1px solid var(--border-light); }
+  .pr-table tr:last-child td { border-bottom: none; }
+  .pr-num { font-weight: 600; }
+  .pr-bar-bg { width: 60px; height: 6px; background: var(--green-bg); border-radius: 3px; overflow: hidden; display: inline-block; vertical-align: middle; margin-left: 0.3rem; }
+  .pr-bar-fill { height: 100%; border-radius: 3px; }
+  .pr-bar-fill.high { background: var(--red); }
+  .pr-bar-fill.med { background: var(--yellow); }
+  .pr-bar-fill.low { background: var(--green); }
+  .nightly-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.25rem; margin-bottom: 0.85rem; }
+  .nightly-header { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; }
+  .nightly-badge { font-size: 0.6rem; font-weight: 700; padding: 0.1rem 0.4rem; border-radius: 4px; background: var(--yellow-bg); color: var(--yellow); border: 1px solid rgba(210,153,34,0.3); text-transform: uppercase; }
+  .coverage-gaps { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 0.85rem 1.1rem; font-size: 0.8rem; }
+  .coverage-gaps ul { padding-left: 1.25rem; color: var(--text-muted); }
+  .coverage-gaps li { margin-bottom: 0.2rem; }
+  .footer { margin-top: 2rem; padding-top: 0.85rem; border-top: 1px solid var(--border); font-size: 0.7rem; color: var(--text-dim); text-align: center; }
+</style>
+</head>
+<body>
+
+<div class="filter-bar">
+  <div class="filter-inner">
+    <span class="filter-label">Filter</span>
+    <button class="filter-btn active" data-filter="all" onclick="setFilter('all')">All</button>
+    <button class="filter-btn" data-filter="int" onclick="setFilter('int')">INT</button>
+    <button class="filter-btn" data-filter="stg" onclick="setFilter('stg')">STG</button>
+    <button class="filter-btn" data-filter="prod" onclick="setFilter('prod')">PROD</button>
+    <button class="filter-btn" data-filter="presubmit" onclick="setFilter('presubmit')">Presubmit</button>
+    <button class="filter-btn" data-filter="nightly" onclick="setFilter('nightly')">Nightly</button>
+  </div>
+</div>
+
+<div class="container" id="app">
+  <p style="color:var(--text-muted)">Loading report data...</p>
+</div>
+
+<!--
+  DATA CONTRACT:
+  The /ciscan skill replaces the DATA = null line below with the actual report data.
+  The object shape:
+
+  {
+    title: "CI Fleet Assessment",
+    subtitle: "All scopes · 7-day window (Apr 19 – Apr 25, 2026) · N findings",
+    generated: "2026-04-25T14:00:00Z",
+
+    fleetCards: [
+      { env: "int", name: "Integration", passRate: 53, detail: "17/32 runs · streak: 1 red",
+        severity: "warning",  // "critical" | "warning" | "ok"
+        sparkline: [ {date:"04/19", pct:60, color:"yellow"}, ... ] }
+    ],
+
+    findings: [
+      { priority: "P1",  // "P1" | "P2" | "P3"
+        envs: ["int","stg","prod"],
+        title: "Cluster Creation Saturation",
+        error: "timeout '45' minutes exceeded during CreateHCPClusterFromParam",
+        dims: { "Chronicity": "Chronic — predates window", "Tests affected": "~15/env", ... },
+        hypothesis: "The test suite creates ...",
+        action: "Reduce parallel cluster creates ...",
+        deployTimeline: [
+          { env: "PROD", rows: [
+            { pass: false, ts: "04/22 09:10", hash: "3e5c4d579c24", meta: "3 failures", newDeploy: false }
+          ]}
+        ],
+        affectedPRs: [
+          { number: 4901, url: "https://...", hits: 5, failRate: 80, annotation: "fleet-wide" }
+        ],
+        relatedFailures: [
+          { count: 16, name: "no-CNI private cluster...", error: "timeout...", url: "https://prow..." }
+        ],
+        evidence: [
+          "Survey: 38 tests across INT+STG+PROD show timeout during CreateHCPClusterFromParam",
+          "Co-failure group: 4 members at 100% overlap across 4 runs"
+        ]
+      }
+    ],
+
+    nightly: [
+      { env: "Nightly INT", passRate: 0, runs: 6, detail: "0/6 runs · all failing" }
+    ],
+
+    coverageGaps: [
+      "STG nightly not queried (no nightly jobs configured for STG)",
+      "Shared-env presubmit not queried (user did not request)"
+    ]
+  }
+-->
+<script>
+// ── DATA INJECTION POINT ──
+// The /ciscan skill replaces this line with: const DATA = { ... };
+const DATA = null;
+
+function esc(s) {
+  if (!s) return '';
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function render(data) {
+  if (!data) {
+    document.getElementById('app').innerHTML = '<p style="color:var(--red)">No DATA provided. The /ciscan skill must inject report data above this script.</p>';
+    return;
+  }
+  document.title = data.title || 'CI Fleet Assessment';
+  let html = '';
+
+  // Title
+  html += `<h1>${esc(data.title)}</h1>`;
+  html += `<div class="subtitle">${esc(data.subtitle)}</div>`;
+
+  // Fleet Status
+  html += '<h2>Fleet Status</h2><div class="fleet-grid">';
+  for (const c of (data.fleetCards || [])) {
+    const sev = c.severity || 'ok';
+    html += `<div class="env-card ${sev}" data-env="${esc(c.env)}">`;
+    html += `<div class="env-name">${esc(c.name)}</div>`;
+    html += `<div class="env-rate ${sev}">${c.passRate.toFixed(1)}%</div>`;
+    html += `<div class="env-detail">${esc(c.detail)}</div>`;
+    if (c.sparkline && c.sparkline.length) {
+      html += '<div class="sparkline">';
+      for (const s of c.sparkline) {
+        const h = Math.max(5, s.pct);
+        html += `<div class="spark-bar ${s.color}" style="height:${h}%" title="${esc(s.date)}: ${s.pct}%"></div>`;
+      }
+      html += '</div><div class="spark-labels">';
+      for (const s of c.sparkline) html += `<span>${esc(s.date.slice(-2))}</span>`;
+      html += '</div>';
+    }
+    html += '</div>';
+  }
+  html += '</div>';
+
+  // Findings
+  if (data.findings && data.findings.length) {
+    html += '<h2>Findings</h2>';
+    for (const f of data.findings) {
+      const envs = (f.envs || []).join(',');
+      html += `<div class="finding" data-envs="${esc(envs)}">`;
+
+      // Header
+      html += '<div class="finding-header">';
+      const bc = f.priority === 'P1' ? 'badge-p1' : f.priority === 'P2' ? 'badge-p2' : 'badge-p3';
+      html += `<span class="badge ${bc}">${esc(f.priority)}</span>`;
+      for (const e of (f.envs || [])) html += `<span class="env-tag">${esc(e)}</span>`;
+      html += `<span class="finding-title">${esc(f.title)}</span>`;
+      html += '</div>';
+
+      // Error block
+      if (f.error) html += `<div class="error-block">${esc(f.error)}</div>`;
+
+      // Dimensions
+      if (f.dims) {
+        html += '<div class="dims">';
+        for (const [k, v] of Object.entries(f.dims)) {
+          html += `<span class="dim-label">${esc(k)}</span><span class="dim-value">${esc(v)}</span>`;
+        }
+        html += '</div>';
+      }
+
+      // Hypothesis
+      if (f.hypothesis) {
+        html += '<div class="hypothesis"><div class="section-label">Hypothesis</div>';
+        html += esc(f.hypothesis) + '</div>';
+      }
+
+      // Action
+      if (f.action) {
+        html += '<div class="action-item"><div class="section-label">Action</div>';
+        html += esc(f.action) + '</div>';
+      }
+
+      // Deploy Timeline
+      if (f.deployTimeline && f.deployTimeline.length) {
+        html += '<details><summary>Deploy Timeline</summary><div class="expand-content"><div class="deploy-timeline">';
+        for (const envGroup of f.deployTimeline) {
+          html += `<div class="deploy-env-label">${esc(envGroup.env)}</div>`;
+          for (const r of (envGroup.rows || [])) {
+            const icon = r.pass ? 'pass' : 'fail';
+            const sym = r.pass ? '+' : 'x';
+            const nd = r.newDeploy ? '<span class="deploy-new">new deploy</span>' : '';
+            html += `<div class="deploy-row">`;
+            html += `<div class="deploy-icon ${icon}">${sym}</div>`;
+            html += `<div class="deploy-ts">${esc(r.ts)}</div>`;
+            html += `<div class="deploy-hash">${esc(r.hash)}</div>`;
+            html += `<div class="deploy-meta">${esc(r.meta)}${nd}</div>`;
+            html += '</div>';
+          }
+        }
+        html += '</div></div></details>';
+      }
+
+      // Affected PRs
+      if (f.affectedPRs && f.affectedPRs.length) {
+        html += '<details><summary>Affected PRs</summary><div class="expand-content">';
+        html += '<table class="pr-table"><tr><th>PR</th><th>Hits</th><th>Fail Rate</th><th>Note</th></tr>';
+        for (const pr of f.affectedPRs) {
+          const barClass = pr.failRate > 60 ? 'high' : pr.failRate > 30 ? 'med' : 'low';
+          html += '<tr>';
+          html += `<td class="pr-num"><a href="${esc(pr.url)}">#${pr.number}</a></td>`;
+          html += `<td>${pr.hits}</td>`;
+          html += `<td>${pr.failRate}%<div class="pr-bar-bg"><div class="pr-bar-fill ${barClass}" style="width:${pr.failRate}%"></div></div></td>`;
+          html += `<td style="color:var(--text-dim)">${esc(pr.annotation || '')}</td>`;
+          html += '</tr>';
+        }
+        html += '</table></div></details>';
+      }
+
+      // Related Failures
+      if (f.relatedFailures && f.relatedFailures.length) {
+        html += `<details><summary>Related Failures (${f.relatedFailures.length} tests)</summary><div class="expand-content">`;
+        for (const rf of f.relatedFailures) {
+          html += '<div class="failure-row">';
+          html += `<div class="failure-count">${rf.count}</div>`;
+          html += `<div><div class="failure-name">${esc(rf.name)}</div>`;
+          if (rf.error) html += `<div class="failure-error">${esc(rf.error)}</div>`;
+          html += '</div>';
+          if (rf.url) html += `<div class="failure-link"><a href="${esc(rf.url)}">prow</a></div>`;
+          html += '</div>';
+        }
+        html += '</div></details>';
+      }
+
+      // Evidence Chain
+      if (f.evidence && f.evidence.length) {
+        html += '<details><summary>Evidence Chain</summary><div class="expand-content"><div class="evidence-list">';
+        for (const step of f.evidence) {
+          html += '<div class="evidence-step"><div class="evidence-num"></div>';
+          html += `<div class="evidence-text">${esc(step)}</div></div>`;
+        }
+        html += '</div></div></details>';
+      }
+
+      html += '</div>'; // end finding
+    }
+  }
+
+  // Nightly
+  if (data.nightly && data.nightly.length) {
+    html += '<h2>Nightly</h2>';
+    for (const n of data.nightly) {
+      html += `<div class="nightly-card" data-env="nightly"><div class="nightly-header">`;
+      html += `<span class="nightly-badge">Nightly</span>`;
+      html += `<span class="finding-title">${esc(n.env)}</span></div>`;
+      const sev = n.passRate < 30 ? 'critical' : n.passRate < 60 ? 'warning' : 'ok';
+      html += `<div class="env-rate ${sev}">${n.passRate.toFixed(1)}%</div>`;
+      html += `<div class="env-detail">${esc(n.detail)}</div>`;
+      html += '</div>';
+    }
+  }
+
+  // Coverage Gaps
+  if (data.coverageGaps && data.coverageGaps.length) {
+    html += '<h2>Coverage Gaps</h2><div class="coverage-gaps"><ul>';
+    for (const g of data.coverageGaps) html += `<li>${esc(g)}</li>`;
+    html += '</ul></div>';
+  }
+
+  // Footer
+  html += `<div class="footer">Generated ${esc(data.generated || new Date().toISOString())} by /ciscan</div>`;
+
+  document.getElementById('app').innerHTML = html;
+}
+
+function setFilter(env) {
+  document.querySelectorAll('.filter-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.filter === env));
+  document.querySelectorAll('.env-card').forEach(c =>
+    c.classList.toggle('hidden', env !== 'all' && c.dataset.env !== env));
+  document.querySelectorAll('.finding').forEach(f => {
+    const envs = (f.dataset.envs || '').split(',');
+    f.classList.toggle('hidden', env !== 'all' && !envs.includes(env));
+  });
+  document.querySelectorAll('.nightly-card').forEach(n =>
+    n.classList.toggle('hidden', env !== 'all' && env !== 'nightly'));
+}
+
+render(DATA);
+</script>
+
+</body>
+</html>
