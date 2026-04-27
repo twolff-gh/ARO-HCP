@@ -15,7 +15,7 @@ func TestStepContainer(t *testing.T) {
 		{"periodic-ci-Azure-ARO-HCP-main-periodic-integration-e2e-parallel", "integration-e2e-parallel", "aro-hcp-test-persistent"},
 		{"periodic-ci-Azure-ARO-HCP-main-periodic-stage-e2e-parallel", "stage-e2e-parallel", "aro-hcp-test-persistent"},
 		{"periodic-ci-Azure-ARO-HCP-main-periodic-prod-e2e-parallel", "prod-e2e-parallel", "aro-hcp-test-persistent"},
-		{"pull-ci-Azure-ARO-HCP-main-e2e-parallel", "e2e-parallel", "aro-hcp-test-local"},
+		{"pull-ci-Azure-ARO-HCP-main-e2e-parallel", "e2e-parallel", "aro-hcp-test-local-run"},
 		{"periodic-ci-Azure-ARO-HCP-main-periodic-prod-e2e-parallel-ocp-nightly", "prod-e2e-parallel", "aro-hcp-test-persistent"},
 	}
 	for _, tt := range tests {

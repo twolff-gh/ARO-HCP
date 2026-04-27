@@ -9,11 +9,7 @@ import (
 )
 
 const (
-	maxBuildLogErrorLineLen = 500
-	maxBuildLogStepLineLen  = 300
-	buildLogTailLines       = 5
-	maxCauseDisplayLen      = 2000
-	timingContextWindow     = 500
+	buildLogTailLines   = 15
 )
 
 // BuildLogExtract holds structural signals from a CI build log.
@@ -51,10 +47,10 @@ func extractBuildLog(raw []byte) *BuildLogExtract {
 			continue
 		}
 		if buildLogErrorRe.MatchString(trimmed) {
-			result.ErrorLines = append(result.ErrorLines, truncateLine(trimmed, maxBuildLogErrorLineLen))
+			result.ErrorLines = append(result.ErrorLines, trimmed)
 		}
 		if buildLogStepRe.MatchString(trimmed) {
-			result.StepLines = append(result.StepLines, truncateLine(trimmed, maxBuildLogStepLineLen))
+			result.StepLines = append(result.StepLines, trimmed)
 		}
 	}
 
@@ -146,11 +142,7 @@ func extractMetricsEvents(data []byte) *MetricsExtract {
 			HumanMessage: e.Message.HumanMessage,
 		}
 		if e.Message.Cause != "" {
-			cause := stripGoPointers(e.Message.Cause)
-			if len(cause) > maxCauseDisplayLen {
-				cause = cause[:maxCauseDisplayLen] + "... [truncated]"
-			}
-			me.Cause = cause
+			me.Cause = e.Message.Cause
 		}
 		result.Events = append(result.Events, me)
 	}
@@ -240,7 +232,7 @@ func enrichStepsWithJUnit(steps []StepTiming, junitData []byte) {
 		for name, tc := range failMap {
 			if strings.Contains(name, steps[i].Name) || strings.Contains(steps[i].Name, name) {
 				if f := tc.effectiveFailure(); f != nil {
-					steps[i].ErrorSnippet = truncateLine(stripANSI(f.errorMessage()), maxBuildLogErrorLineLen)
+					steps[i].ErrorSnippet = stripANSI(f.errorMessage())
 				}
 				break
 			}
@@ -419,7 +411,7 @@ func extractProvisionSummary(data []byte) *ProvisionSummary {
 				result.Failures = append(result.Failures, ProvisionFailure{
 					Name:    tc.Name,
 					TimeSec: tc.Time,
-					Message: truncateLine(f.errorMessage(), 500),
+					Message: f.errorMessage(),
 				})
 			}
 		}
@@ -498,97 +490,4 @@ func extractAzureSummary(data []byte, testName string) *AzureTestSummary {
 	return result
 }
 
-// --- Timing summary extraction (string-based YAML parsing) ---
-
-// TimingSlowest identifies the slowest Azure resource operation from timing metadata.
-type TimingSlowest struct {
-	TestName      string  `json:"test_name"`
-	DurationSec   float64 `json:"duration_seconds"`
-	OperationType string  `json:"operation_type"`
-	ResourceType  string  `json:"resource_type"`
-}
-
-var (
-	timingDurationRe = regexp.MustCompile(`duration:\s+PT([\d.]+)S`)
-	timingOpTypeRe   = regexp.MustCompile(`operationType:\s+(\S+)`)
-	timingResTypeRe  = regexp.MustCompile(`resourceType:\s+(\S+)`)
-	timingIdentRe    = regexp.MustCompile(`(?m)^- (.+)$`)
-)
-
-func extractTimingSlowest(data []byte) *TimingSlowest {
-	content := string(data)
-
-	// Extract test name from identifier block
-	identStart := strings.Index(content, "identifier:")
-	testName := ""
-	if identStart >= 0 {
-		block := content[identStart:]
-		end := strings.Index(block, "\nstartedAt:")
-		if end < 0 {
-			end = strings.Index(block, "\ndeployments:")
-		}
-		if end > 0 {
-			block = block[:end]
-		}
-		matches := timingIdentRe.FindAllStringSubmatch(block, -1)
-		var parts []string
-		for _, m := range matches {
-			parts = append(parts, strings.TrimSpace(m[1]))
-		}
-		testName = strings.Join(parts, " / ")
-	}
-
-	// Find slowest operation by scanning all duration fields
-	var maxDur float64
-	var maxIdx int
-	allDurs := timingDurationRe.FindAllStringSubmatchIndex(content, -1)
-	durMatches := timingDurationRe.FindAllStringSubmatch(content, -1)
-	for i, m := range durMatches {
-		if len(m) < 2 {
-			continue
-		}
-		val, err := strconv.ParseFloat(m[1], 64)
-		if err != nil {
-			continue
-		}
-		if val > maxDur {
-			maxDur = val
-			maxIdx = i
-		}
-	}
-
-	if maxDur == 0 || len(allDurs) == 0 {
-		return nil
-	}
-
-	// Extract operation context near the slowest duration
-	pos := allDurs[maxIdx][0]
-	contextStart := max(pos-timingContextWindow, 0)
-	contextEnd := min(pos+timingContextWindow, len(content))
-	context := content[contextStart:contextEnd]
-
-	opType := ""
-	if m := timingOpTypeRe.FindStringSubmatch(context); len(m) > 1 {
-		opType = m[1]
-	}
-	resType := ""
-	if m := timingResTypeRe.FindStringSubmatch(context); len(m) > 1 {
-		resType = m[1]
-	}
-
-	return &TimingSlowest{
-		TestName:      testName,
-		DurationSec:   maxDur,
-		OperationType: opType,
-		ResourceType:  resType,
-	}
-}
-
 // --- Utility ---
-
-func truncateLine(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
-}

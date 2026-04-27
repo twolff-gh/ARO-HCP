@@ -14,7 +14,7 @@ type TestLink struct {
 
 var (
 	linkRGRe    = regexp.MustCompile(`--resource-group[= ]([a-zA-Z0-9_-]+)`)
-	linkKustoRe = regexp.MustCompile(`(hcp-\S+\.(?:eastus2|uksouth|westeurope|centralindia|australiaeast|canadacentral|switzerlandnorth|brazilsouth)\S*)`)
+	linkKustoRe = regexp.MustCompile(`(hcp-[a-zA-Z0-9-]+\.[a-z]+[a-z0-9]*\.kusto\.windows\.net)`)
 )
 
 // extractTestLinks parses custom-link-tools HTML to map resource groups to Kusto clusters.

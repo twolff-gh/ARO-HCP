@@ -14,20 +14,12 @@ import (
 )
 
 const (
-	maxRunsFetch       = 1000
-	maxEnrichTargets   = 25
-	maxDurationFetches = 20
+	maxRunsFetch = 1000
 
-	minHexAddrLen        = 10
-	maxTypeAnnotationLen = 60
-
-	lowSampleThreshold      = 3     // region rates below this run count are flagged
-	maxDurationDays         = 7     // recent duration history window
-	maxDurationPerDay       = 86400 // filter out durations above 1 day (bogus data)
-	prOutlierRunThreshold   = 5     // PRs with more runs than this can skew stats
+	lowSampleThreshold      = 3
 	boundaryDetectionWindow = 24 * time.Hour
-	isolatedFailureCeiling  = 3  // <=N failures = "isolated"
-	moderateFailureCeiling  = 15 // <=N failures = "moderate", above = "cascade"
+	isolatedFailureCeiling  = 3
+	moderateFailureCeiling  = 15
 	neighborRunsLimit       = 100
 )
 
@@ -50,23 +42,25 @@ func runSurvey(args []string) error {
 	job := fs.String("job", "", "override job name filter")
 	test := fs.String("test", "", "filter failing tests by name substring")
 	cofailure := fs.Float64("cofailure", 0.8, "co-failure overlap threshold (0=disable)")
-	blast := fs.Int("blast", 10, "exclude runs with more than N failures from co-failure analysis (0=disable)")
+	_ = fs.Int("blast", 0, "deprecated, ignored")
 	fs.Parse(args)
 
 	s := newSippy()
 	if *env == "all" {
-		return surveyAll(s, *days, *job, *test, *cofailure, *blast)
+		return surveyAll(s, *days, *job, *test, *cofailure)
 	}
-	return surveyEnv(s, *env, *days, *job, *test, *cofailure, *blast)
+	return surveyEnv(s, *env, *days, *job, *test, *cofailure)
 }
 
 // surveyData holds all fetched and computed data for a single environment survey.
 type surveyData struct {
-	release       string
-	runs          []JobRun
-	ranked        []rankedFailure
-	runMap        map[int64]JobRun
-	requestedDays int
+	release              string
+	runs                 []JobRun
+	ranked               []rankedFailure
+	runMap               map[int64]JobRun
+	requestedDays        int
+	nightlyRunsExcluded  int
+	runCountCapped       bool
 }
 
 // --- JSON output types — the contract between tooling and LLM ---
@@ -85,17 +79,18 @@ type surveyJSON struct {
 	Failures        []failureJSON        `json:"failures"`
 	CoFailureGroups []coFailureGroupJSON `json:"co_failure_groups,omitempty"`
 	CoFailureStats  *coFailureStatsJSON  `json:"co_failure_stats,omitempty"`
-	PRStats         *prStatsJSON         `json:"pr_stats,omitempty"`
 }
 
 type dataWindowJSON struct {
-	RequestedDays int    `json:"requested_days"`
-	ActualDays    int    `json:"actual_days"`
-	OldestRun     string `json:"oldest_run,omitempty"`
-	NewestRun     string `json:"newest_run,omitempty"`
-	Truncated     bool   `json:"truncated"`
-	Empty         bool   `json:"empty,omitempty"`
-	EmptyReason   string `json:"empty_reason,omitempty"`
+	RequestedDays        int    `json:"requested_days"`
+	ActualDays           int    `json:"actual_days"`
+	OldestRun            string `json:"oldest_run,omitempty"`
+	NewestRun            string `json:"newest_run,omitempty"`
+	Truncated            bool   `json:"truncated"`
+	NightlyRunsExcluded  int    `json:"nightly_runs_excluded,omitempty"`
+	RunCountCapped       bool   `json:"run_count_capped,omitempty"`
+	Empty                bool   `json:"empty,omitempty"`
+	EmptyReason          string `json:"empty_reason,omitempty"`
 }
 
 type statusJSON struct {
@@ -126,40 +121,41 @@ type ev2CoverageJSON struct {
 }
 
 type runJSON struct {
-	ID           int64    `json:"id"`
-	Timestamp    int64    `json:"timestamp"`
-	Result       string   `json:"overall_result"`
-	RealFailures int      `json:"real_failures"`
-	FailedTests  []string `json:"failed_tests,omitempty"`
-	EV2Hash      string   `json:"ev2_hash,omitempty"`
-	Region       string   `json:"region,omitempty"`
-	Cluster      string   `json:"cluster,omitempty"`
-	PullNumber   int      `json:"pull_number,omitempty"`
-	URL          string   `json:"url"`
+	ID                   int64    `json:"id"`
+	Timestamp            int64    `json:"timestamp"`
+	Result               string   `json:"overall_result"`
+	RealFailures         int      `json:"real_failures"`
+	FailedTests          []string `json:"failed_tests,omitempty"`
+	FailedTestsTruncated bool     `json:"failed_tests_truncated,omitempty"`
+	EV2Hash              string   `json:"ev2_hash,omitempty"`
+	Region               string   `json:"region,omitempty"`
+	Cluster              string   `json:"cluster,omitempty"`
+	PullNumber           int      `json:"pull_number,omitempty"`
+	URL                  string   `json:"url"`
 }
 
 type failureJSON struct {
-	TestName         string           `json:"test_name"`
-	FailureCount     int              `json:"failure_count"`
-	RegularHits      int              `json:"regular_hits"`
-	FirstFailure     string           `json:"first_failure"`
-	LastFailure      string           `json:"last_failure"`
-	LastPass         string           `json:"last_pass,omitempty"`
-	Regions          []string         `json:"regions,omitempty"`
-	AtWindowBoundary bool             `json:"at_window_boundary"`
-	Chronicity       string           `json:"chronicity,omitempty"`
-	BestRunID        int64            `json:"best_run_id"`
-	BestRunURL       string           `json:"best_run_url,omitempty"`
-	ErrorGroups      []errorGroupJSON `json:"error_groups"`
-	NormalizedError  string           `json:"normalized_error,omitempty"`
-	DailyHits        []dailyHitJSON   `json:"daily_hits,omitempty"`
-	Durations        []float64        `json:"durations,omitempty"`
-	TotalRuns        int              `json:"total_runs"`
+	TestName          string           `json:"test_name"`
+	FailureCount      int              `json:"failure_count"`
+	RegularHits       int              `json:"regular_hits"`
+	FirstFailure      string           `json:"first_failure"`
+	LastFailure       string           `json:"last_failure"`
+	LastPass          string           `json:"last_pass,omitempty"`
+	Regions           []string         `json:"regions,omitempty"`
+	AtWindowBoundary  bool             `json:"at_window_boundary"`
+	Chronicity        string           `json:"chronicity,omitempty"`
+	BestRunID         int64            `json:"best_run_id"`
+	BestRunURL        string           `json:"best_run_url,omitempty"`
+	ErrorGroups       []errorGroupJSON `json:"error_groups"`
+	InnermostCause    string           `json:"innermost_cause,omitempty"`
+	DailyHits         []dailyHitJSON   `json:"daily_hits,omitempty"`
+	TotalRuns         int              `json:"total_runs"`
 }
 
 type errorGroupJSON struct {
-	Error string `json:"error"`
-	Count int    `json:"count"`
+	Error           string `json:"error"`
+	ExtractedErrors string `json:"extracted_errors,omitempty"`
+	Count           int    `json:"count"`
 }
 
 type dailyHitJSON struct {
@@ -195,24 +191,6 @@ type crossEnvJSON struct {
 	Environments []crossEnvEntryJSON `json:"environments"`
 }
 
-type prEntryJSON struct {
-	Number      int      `json:"number"`
-	Runs        int      `json:"runs"`
-	Passed      int      `json:"passed"`
-	Failed      int      `json:"failed"`
-	PassRate    float64  `json:"pass_rate"`
-	FailedTests []string `json:"failed_tests"`
-	Outlier     bool     `json:"outlier,omitempty"`
-	URL         string   `json:"url"`
-}
-
-type prStatsJSON struct {
-	DistinctPRs        int           `json:"distinct_prs"`
-	PRWeightedPassRate float64       `json:"pr_weighted_pass_rate"`
-	RunWeightedNote    string        `json:"run_weighted_note,omitempty"`
-	PRs                []prEntryJSON `json:"prs"`
-}
-
 type surveyAllJSON struct {
 	Environments     []surveyJSON   `json:"environments"`
 	CrossEnvFailures []crossEnvJSON `json:"cross_env_failures"`
@@ -237,8 +215,10 @@ func fetchSurveyData(s *sippy, env string, days int, jobPat, testPat string) (*s
 	if err != nil {
 		return nil, err
 	}
+	runCountCapped := len(runs) >= maxRunsFetch
+	nightlyExcluded := 0
 	if jobPat == "" {
-		runs = filterNightlyRuns(runs)
+		runs, nightlyExcluded = filterNightlyRuns(runs)
 	}
 	runs = filterRunsByDate(runs, time.Now().Add(-time.Duration(days)*24*time.Hour))
 
@@ -250,20 +230,20 @@ func fetchSurveyData(s *sippy, env string, days int, jobPat, testPat string) (*s
 	if len(failures) == 0 {
 		failures = failuresFromRuns(runs)
 	}
-	if len(failures) > 0 && needsErrorEnrichment(failures) {
-		enrichFailuresWithArtifacts(failures, runs)
-	}
+	enrichMissingErrors(failures, runs)
 	extractPipelineStepErrors(failures)
 
 	runMap, regularRunIDs := buildRunLookup(runs)
-	ranked := rankFailures(failures, runMap, regularRunIDs, testPat, jobPat)
+	ranked := rankFailures(failures, runMap, regularRunIDs, testPat)
 
 	return &surveyData{
-		release:       release,
-		runs:          runs,
-		ranked:        ranked,
-		runMap:        runMap,
-		requestedDays: days,
+		release:             release,
+		runs:                runs,
+		ranked:              ranked,
+		runMap:              runMap,
+		requestedDays:       days,
+		nightlyRunsExcluded: nightlyExcluded,
+		runCountCapped:      runCountCapped,
 	}, nil
 }
 
@@ -271,7 +251,7 @@ func fetchSurveyData(s *sippy, env string, days int, jobPat, testPat string) (*s
 
 // buildSurveyJSON converts surveyData into a structured JSON representation
 // with no truncation, no sorting, and raw numeric values.
-func buildSurveyJSON(env string, data *surveyData, cofailureThreshold float64, blastRadius int, s ...*sippy) surveyJSON {
+func buildSurveyJSON(env string, data *surveyData, cofailureThreshold float64) surveyJSON {
 	result := surveyJSON{
 		Env:     env,
 		Release: data.release,
@@ -295,44 +275,41 @@ func buildSurveyJSON(env string, data *surveyData, cofailureThreshold float64, b
 		}
 	}
 
-	result.DataWindow = buildDataWindow(data.runs, data.requestedDays)
+	result.DataWindow = buildDataWindow(data.runs, data.requestedDays, data.nightlyRunsExcluded, data.runCountCapped)
 	result.DailyRates = buildDailyRates(data.runs)
 	result.EV2Coverage = buildEV2Coverage(data.runs)
 	result.EV2HashRates = buildEV2HashRates(data.runs)
 	result.FailureScaleDist = buildFailureScaleDist(data.runs)
 	result.RegionRates = buildRegionRates(data.runs)
 	result.Runs = buildRunsJSON(data.runs)
-	var sc *sippy
-	if len(s) > 0 {
-		sc = s[0]
-	}
 	var windowStart time.Time
 	if len(data.runs) > 0 {
 		windowStart = time.UnixMilli(data.runs[len(data.runs)-1].Timestamp).UTC()
 	}
-	result.Failures = buildFailuresJSON(data.ranked, data.runMap, len(data.runs), sc, data.release, windowStart)
-	result.CoFailureGroups, result.CoFailureStats = buildCoFailureGroups(data.runs, cofailureThreshold, blastRadius)
-	result.PRStats = buildPRStats(data.runs)
+	result.Failures = buildFailuresJSON(data.ranked, data.runMap, len(data.runs), windowStart)
+	result.CoFailureGroups, result.CoFailureStats = buildCoFailureGroups(data.runs, cofailureThreshold)
 
 	return result
 }
 
-func buildDataWindow(runs []JobRun, requestedDays int) *dataWindowJSON {
+func buildDataWindow(runs []JobRun, requestedDays, nightlyExcluded int, runCountCapped bool) *dataWindowJSON {
 	if requestedDays == 0 {
 		return nil
 	}
 	if len(runs) == 0 {
 		return &dataWindowJSON{
-			RequestedDays: requestedDays,
-			Empty:         true,
-			EmptyReason:   "no runs matched the job filter within the requested time window",
+			RequestedDays:       requestedDays,
+			NightlyRunsExcluded: nightlyExcluded,
+			RunCountCapped:      runCountCapped,
+			Empty:               true,
+			EmptyReason:         "no runs matched the job filter within the requested time window",
 		}
 	}
 	oldest := runs[len(runs)-1].Timestamp
 	newest := runs[0].Timestamp
 	actualSpan := time.UnixMilli(newest).Sub(time.UnixMilli(oldest))
 	actualDays := int(actualSpan.Hours()/24) + 1
-	truncated := actualDays < requestedDays-1
+	truncated := actualDays < requestedDays-1 || runCountCapped
 	if truncated {
 		fmt.Fprintf(os.Stderr, "warning: requested %d days but data only spans %d days (%s to %s)\n",
 			requestedDays, actualDays,
@@ -340,11 +317,13 @@ func buildDataWindow(runs []JobRun, requestedDays int) *dataWindowJSON {
 			time.UnixMilli(newest).UTC().Format("2006-01-02"))
 	}
 	return &dataWindowJSON{
-		RequestedDays: requestedDays,
-		ActualDays:    actualDays,
-		OldestRun:     time.UnixMilli(oldest).UTC().Format(time.RFC3339),
-		NewestRun:     time.UnixMilli(newest).UTC().Format(time.RFC3339),
-		Truncated:     truncated,
+		RequestedDays:       requestedDays,
+		ActualDays:          actualDays,
+		OldestRun:           time.UnixMilli(oldest).UTC().Format(time.RFC3339),
+		NewestRun:           time.UnixMilli(newest).UTC().Format(time.RFC3339),
+		Truncated:           truncated,
+		NightlyRunsExcluded: nightlyExcluded,
+		RunCountCapped:      runCountCapped,
 	}
 }
 
@@ -476,6 +455,7 @@ func buildRegionRates(runs []JobRun) []regionRateJSON {
 }
 
 func buildRunsJSON(runs []JobRun) []runJSON {
+	const maxFailedTestsPerRun = 5
 	result := make([]runJSON, len(runs))
 	for i, r := range runs {
 		var ev2 string
@@ -488,43 +468,28 @@ func buildRunsJSON(runs []JobRun) []runJSON {
 				failedTests = append(failedTests, name)
 			}
 		}
+		truncated := len(failedTests) > maxFailedTestsPerRun
+		if truncated {
+			failedTests = failedTests[:maxFailedTestsPerRun]
+		}
 		result[i] = runJSON{
-			ID:           r.ID,
-			Timestamp:    r.Timestamp,
-			Result:       r.OverallResult,
-			RealFailures: realFailureCount(r),
-			FailedTests:  failedTests,
-			EV2Hash:      ev2,
-			Region:       ev2Region(r),
-			Cluster:      r.Cluster,
-			PullNumber:   extractPullNumber(r.URL),
-			URL:          r.URL,
+			ID:                   r.ID,
+			Timestamp:            r.Timestamp,
+			Result:               r.OverallResult,
+			RealFailures:         realFailureCount(r),
+			FailedTests:          failedTests,
+			FailedTestsTruncated: truncated,
+			EV2Hash:              ev2,
+			Region:               ev2Region(r),
+			Cluster:              r.Cluster,
+			PullNumber:           extractPullNumber(r.URL),
+			URL:                  r.URL,
 		}
 	}
 	return result
 }
 
-func buildFailuresJSON(ranked []rankedFailure, runMap map[int64]JobRun, totalRuns int, s *sippy, release string, windowStart time.Time) []failureJSON {
-	// Fetch durations in parallel for top failures
-	durCount := min(len(ranked), maxDurationFetches)
-	durations := make([][]float64, len(ranked))
-	if durCount > 0 {
-		type durResult struct {
-			idx  int
-			vals []float64
-		}
-		ch := make(chan durResult, durCount)
-		for i := range durCount {
-			go func(idx int) {
-				ch <- durResult{idx, fetchDurations(s, release, ranked[idx].failure.TestName)}
-			}(i)
-		}
-		for range durCount {
-			r := <-ch
-			durations[r.idx] = r.vals
-		}
-	}
-
+func buildFailuresJSON(ranked []rankedFailure, runMap map[int64]JobRun, totalRuns int, windowStart time.Time) []failureJSON {
 	result := make([]failureJSON, len(ranked))
 	for i, rf := range ranked {
 		f := rf.failure
@@ -550,7 +515,7 @@ func buildFailuresJSON(ranked []rankedFailure, runMap map[int64]JobRun, totalRun
 			}
 		}
 		errorGroups := groupErrorOutputsFull(f)
-		var normalizedError string
+		var innermostCause string
 		if len(errorGroups) > 0 {
 			dominant := errorGroups[0]
 			for _, eg := range errorGroups[1:] {
@@ -558,7 +523,7 @@ func buildFailuresJSON(ranked []rankedFailure, runMap map[int64]JobRun, totalRun
 					dominant = eg
 				}
 			}
-			normalizedError = normalizeForSimilarity(dominant.Error)
+			innermostCause, _ = extractInnermostCause(dominant.Error)
 		}
 		result[i] = failureJSON{
 			TestName:         f.TestName,
@@ -573,36 +538,12 @@ func buildFailuresJSON(ranked []rankedFailure, runMap map[int64]JobRun, totalRun
 			BestRunID:        rf.bestRunID,
 			BestRunURL:       rf.bestRunURL,
 			ErrorGroups:      errorGroups,
-			NormalizedError:  normalizedError,
+			InnermostCause:   innermostCause,
 			DailyHits:        buildDailyHits(f, runMap),
-			Durations:        durations[i],
 			TotalRuns:        totalRuns,
 		}
 	}
 	return result
-}
-
-func fetchDurations(s *sippy, release, testName string) []float64 {
-	if s == nil || release == "" {
-		return nil
-	}
-	dur, err := s.durations(release, testName)
-	if err != nil || len(dur) == 0 {
-		return nil
-	}
-	dates := slices.Sorted(maps.Keys(dur))
-	if n := len(dates); n > maxDurationDays {
-		dates = dates[n-maxDurationDays:]
-	}
-	var vals []float64
-	for _, d := range dates {
-		v := dur[d]
-		if v > maxDurationPerDay {
-			continue
-		}
-		vals = append(vals, v)
-	}
-	return vals
 }
 
 func buildDailyHits(f RecentFailure, runMap map[int64]JobRun) []dailyHitJSON {
@@ -632,8 +573,9 @@ func groupErrorOutputsFull(f RecentFailure) []errorGroupJSON {
 	}
 
 	type bucket struct {
-		full  string
-		count int
+		full      string
+		extracted string
+		count     int
 	}
 	buckets := map[string]*bucket{}
 	var order []string
@@ -642,15 +584,12 @@ func groupErrorOutputsFull(f RecentFailure) []errorGroupJSON {
 		if out.Output == "" {
 			continue
 		}
-		msg := strings.ReplaceAll(out.Output, "\n", " ")
-		msg = strings.Join(strings.Fields(msg), " ")
-		msg = stripGoPointers(msg)
-		key := stripBase64Blobs(stripTimestamps(stripResourceSuffixes(msg)))
+		key := normalizeForSimilarity(out.Output)
 
 		if b, ok := buckets[key]; ok {
 			b.count++
 		} else {
-			buckets[key] = &bucket{full: msg, count: 1}
+			buckets[key] = &bucket{full: out.Output, extracted: out.ExtractedErrors, count: 1}
 			order = append(order, key)
 		}
 	}
@@ -658,23 +597,23 @@ func groupErrorOutputsFull(f RecentFailure) []errorGroupJSON {
 	groups := make([]errorGroupJSON, 0, len(buckets))
 	for _, key := range order {
 		b := buckets[key]
-		groups = append(groups, errorGroupJSON{Error: b.full, Count: b.count})
+		groups = append(groups, errorGroupJSON{Error: b.full, ExtractedErrors: b.extracted, Count: b.count})
 	}
 	return groups
 }
 
 // --- Dispatch functions ---
 
-func surveyEnv(s *sippy, env string, days int, jobPat, testPat string, cofailureThreshold float64, blastRadius int) error {
+func surveyEnv(s *sippy, env string, days int, jobPat, testPat string, cofailureThreshold float64) error {
 	data, err := fetchSurveyData(s, env, days, jobPat, testPat)
 	if err != nil {
 		return err
 	}
-	sj := buildSurveyJSON(env, data, cofailureThreshold, blastRadius, s)
+	sj := buildSurveyJSON(env, data, cofailureThreshold)
 	return json.NewEncoder(os.Stdout).Encode(sj)
 }
 
-func surveyAll(s *sippy, days int, jobPat, testPat string, cofailureThreshold float64, blastRadius int) error {
+func surveyAll(s *sippy, days int, jobPat, testPat string, cofailureThreshold float64) error {
 	envs := []string{"int", "stg", "prod"}
 	type envResult struct {
 		env    string
@@ -690,7 +629,7 @@ func surveyAll(s *sippy, days int, jobPat, testPat string, cofailureThreshold fl
 				ch <- envResult{env: env, err: err}
 				return
 			}
-			sj := buildSurveyJSON(env, data, cofailureThreshold, blastRadius, s)
+			sj := buildSurveyJSON(env, data, cofailureThreshold)
 			ch <- envResult{env: env, survey: sj, ranked: data.ranked}
 		}(e)
 	}
@@ -747,90 +686,6 @@ func surveyAll(s *sippy, days int, jobPat, testPat string, cofailureThreshold fl
 	return json.NewEncoder(os.Stdout).Encode(result)
 }
 
-// buildPRStats computes per-PR pass/fail metrics from presubmit runs.
-// Returns nil for non-presubmit environments (where pull_number is always 0).
-func buildPRStats(runs []JobRun) *prStatsJSON {
-
-	type prBucket struct {
-		passed      int
-		failed      int
-		failedTests map[string]bool
-	}
-	prs := map[int]*prBucket{}
-	for _, r := range runs {
-		pr := extractPullNumber(r.URL)
-		if pr == 0 {
-			continue
-		}
-		b, ok := prs[pr]
-		if !ok {
-			b = &prBucket{failedTests: map[string]bool{}}
-			prs[pr] = b
-		}
-		if realFailureCount(r) == 0 {
-			b.passed++
-		} else {
-			b.failed++
-			for _, t := range r.FailedTestNames {
-				if !isSyntheticTest(t) {
-					b.failedTests[t] = true
-				}
-			}
-		}
-	}
-
-	if len(prs) == 0 {
-		return nil
-	}
-
-	entries := make([]prEntryJSON, 0, len(prs))
-	var passRateSum float64
-	for pr, b := range prs {
-		total := b.passed + b.failed
-		rate := 100.0 * float64(b.passed) / float64(total)
-		passRateSum += rate
-		tests := slices.Sorted(maps.Keys(b.failedTests))
-		entries = append(entries, prEntryJSON{
-			Number:      pr,
-			Runs:        total,
-			Passed:      b.passed,
-			Failed:      b.failed,
-			PassRate:    rate,
-			FailedTests: tests,
-			Outlier:     total > prOutlierRunThreshold,
-			URL:         fmt.Sprintf("https://github.com/Azure/ARO-HCP/pull/%d", pr),
-		})
-	}
-
-	slices.SortFunc(entries, func(a, b prEntryJSON) int {
-		if c := cmp.Compare(b.Failed, a.Failed); c != 0 {
-			return c
-		}
-		return cmp.Compare(b.Runs, a.Runs)
-	})
-
-	prWeighted := passRateSum / float64(len(prs))
-
-	var note string
-	for _, e := range entries {
-		if e.Outlier {
-			runWeighted := 100.0 * float64(e.Passed) / float64(e.Runs)
-			diff := prWeighted - runWeighted
-			if diff > 5 {
-				note = fmt.Sprintf("PR #%d has %d runs and skews the run-weighted pass rate. PR-weighted rate (%.1f%%) is more representative.", e.Number, e.Runs, prWeighted)
-				break
-			}
-		}
-	}
-
-	return &prStatsJSON{
-		DistinctPRs:        len(prs),
-		PRWeightedPassRate: prWeighted,
-		RunWeightedNote:    note,
-		PRs:                entries,
-	}
-}
-
 // --- Data helpers ---
 
 // filterRunsByDate removes runs older than the cutoff time.
@@ -845,15 +700,19 @@ func filterRunsByDate(runs []JobRun, cutoff time.Time) []JobRun {
 	return filtered
 }
 
-// filterNightlyRuns removes ocp-nightly runs from the list.
-func filterNightlyRuns(runs []JobRun) []JobRun {
+// filterNightlyRuns removes ocp-nightly runs from the list, returning
+// the filtered list and the count of excluded runs.
+func filterNightlyRuns(runs []JobRun) ([]JobRun, int) {
 	var filtered []JobRun
+	excluded := 0
 	for _, r := range runs {
-		if !strings.Contains(r.Job, "ocp-nightly") {
+		if strings.Contains(r.Job, "ocp-nightly") {
+			excluded++
+		} else {
 			filtered = append(filtered, r)
 		}
 	}
-	return filtered
+	return filtered, excluded
 }
 
 // computeStreak counts consecutive runs with the same pass/fail status
@@ -922,7 +781,7 @@ func enrichFailure(f RecentFailure, runMap map[int64]JobRun, regularRunIDs map[i
 }
 
 // rankFailures filters, enriches, and sorts failures by frequency.
-func rankFailures(failures []RecentFailure, runMap map[int64]JobRun, regularRunIDs map[int64]bool, testPat, jobPat string) []rankedFailure {
+func rankFailures(failures []RecentFailure, runMap map[int64]JobRun, regularRunIDs map[int64]bool, testPat string) []rankedFailure {
 	var ranked []rankedFailure
 	for _, f := range failures {
 		if isSyntheticTest(f.TestName) {
@@ -932,9 +791,6 @@ func rankFailures(failures []RecentFailure, runMap map[int64]JobRun, regularRunI
 			continue
 		}
 		rf := enrichFailure(f, runMap, regularRunIDs)
-		if jobPat == "" && rf.regularHits == 0 && len(f.Outputs) > 0 {
-			continue
-		}
 		ranked = append(ranked, rf)
 	}
 
@@ -953,11 +809,7 @@ func ev2Hash(r JobRun) string {
 	if r.Annotations == nil {
 		return ""
 	}
-	hash := r.Annotations[ev2HashAnnotation]
-	if len(hash) > ev2HashDisplayLen {
-		return hash[:ev2HashDisplayLen]
-	}
-	return hash
+	return r.Annotations[ev2HashAnnotation]
 }
 
 func ev2Region(r JobRun) string {
@@ -990,10 +842,8 @@ func realFailureCount(r JobRun) int {
 // logEntryStartRe matches the start of a templatize structured log entry.
 var logEntryStartRe = regexp.MustCompile(`time=\d{4}-\d{2}-\d{2}T`)
 
-// extractPipelineStepErrors replaces raw pipeline step log output with just
-// the error-level entries, so error_groups shows the actual failure (e.g.,
-// "RoleAssignmentLimitExceeded") instead of the full step log starting with
-// "Running step."
+// extractPipelineStepErrors extracts ERROR/FATAL-level entries from pipeline
+// step log output into ExtractedErrors, preserving the original Output.
 func extractPipelineStepErrors(failures []RecentFailure) {
 	for i := range failures {
 		if !strings.HasPrefix(failures[i].TestName, "Run pipeline step ") {
@@ -1004,7 +854,7 @@ func extractPipelineStepErrors(failures []RecentFailure) {
 				continue
 			}
 			if extracted := extractStepError(failures[i].Outputs[j].Output); extracted != "" {
-				failures[i].Outputs[j].Output = extracted
+				failures[i].Outputs[j].ExtractedErrors = extracted
 			}
 		}
 	}
@@ -1036,125 +886,118 @@ func extractStepError(output string) string {
 	return strings.Join(errors, "\n")
 }
 
-// --- Error normalization ---
-
-var (
-	sourceLocRe = regexp.MustCompile(`^fail \[.*?]:?\s*`)
-	uuidRe      = regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
-	azureURLRe  = regexp.MustCompile(`https://management\.azure\.com/\S+`)
-	numericRe   = regexp.MustCompile(`'\d+[\.\d]*'|\b\d+\.\d+s\b`)
-)
 
 func normalizeForSimilarity(s string) string {
-	s = sourceLocRe.ReplaceAllLiteralString(s, "")
-	s = isoTimestampRe.ReplaceAllString(s, "*")
-	s = uuidRe.ReplaceAllString(s, "*")
-	s = azureURLRe.ReplaceAllString(s, "*")
-	s = numericRe.ReplaceAllString(s, "*")
-	s = stripGoPointers(s)
-	s = stripResourceSuffixes(s)
-	s = strings.ToLower(s)
-	return s
-}
-
-// --- Utility functions ---
-
-var isoTimestampRe = regexp.MustCompile(`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})`)
-var base64BlobRe = regexp.MustCompile(`[A-Za-z0-9+/=]{40,}`)
-
-func stripTimestamps(s string) string {
-	return isoTimestampRe.ReplaceAllLiteralString(s, "")
-}
-
-func stripBase64Blobs(s string) string {
-	return base64BlobRe.ReplaceAllLiteralString(s, "")
-}
-
-func stripResourceSuffixes(s string) string {
-	result := s
-	for _, sep := range []string{"resourceGroups/", "resourcegroup=\"", "resource group "} {
-		sepLower := strings.ToLower(sep)
-		offset := 0
-		for offset < len(result) {
-			idx := strings.Index(strings.ToLower(result[offset:]), sepLower)
-			if idx < 0 {
-				break
-			}
-			start := offset + idx + len(sep)
-			end := start
-			for end < len(result) && result[end] != '/' && result[end] != '"' && result[end] != ',' && result[end] != ' ' {
-				end++
-			}
-			rgName := result[start:end]
-			lastDash := strings.LastIndex(rgName, "-")
-			if lastDash <= 0 {
-				offset = end
-				continue
-			}
-			cleaned := rgName[:lastDash] + "-*"
-			result = result[:start] + cleaned + result[end:]
-			offset = start + len(cleaned)
-		}
-	}
-	return result
+	return strings.ToLower(strings.Join(strings.Fields(s), " "))
 }
 
 func stripGoPointers(s string) string {
-	var b strings.Builder
-	i := 0
-	for i < len(s) {
-		if n := matchHexAddr(s, i); n > 0 {
-			i += n
-			continue
-		}
-		if n := matchTypeAnnotation(s, i); n > 0 {
-			i += n
-			continue
-		}
-		b.WriteByte(s[i])
-		i++
-	}
-	return b.String()
+	return s
 }
 
-func matchHexAddr(s string, i int) int {
-	if i+2 >= len(s) || s[i] != '0' || s[i+1] != 'x' {
-		return 0
-	}
-	j := i + 2
-	for j < len(s) && ((s[j] >= '0' && s[j] <= '9') || (s[j] >= 'a' && s[j] <= 'f')) {
-		j++
-	}
-	if j-i >= minHexAddrLen {
-		return j - i
-	}
-	return 0
-}
-
-func matchTypeAnnotation(s string, i int) int {
-	if i+3 >= len(s) || s[i] != '<' || s[i+1] != '*' {
-		return 0
-	}
-	end := strings.Index(s[i:], ">")
-	if end <= 0 || end >= maxTypeAnnotationLen {
-		return 0
-	}
-	j := i + end + 1
-	for j < len(s) && s[j] == ' ' {
-		j++
-	}
-	if j < len(s) && s[j] == ':' {
-		j++
-		for j < len(s) && s[j] == ' ' {
-			j++
+// enrichMissingErrors fetches extension_test_result.json from failing runs to fill
+// in error text when Sippy didn't provide it (common for presubmit).
+func enrichMissingErrors(failures []RecentFailure, runs []JobRun) {
+	needsEnrich := false
+	for _, f := range failures {
+		for _, out := range f.Outputs {
+			if out.Output == "" {
+				needsEnrich = true
+				break
+			}
+		}
+		if needsEnrich {
+			break
 		}
 	}
-	return j - i
+	if !needsEnrich {
+		return
+	}
+
+	// Pick top failing runs (most test failures) to fetch error text from
+	var targets []JobRun
+	for _, r := range runs {
+		if realFailureCount(r) > 0 {
+			targets = append(targets, r)
+		}
+	}
+	if len(targets) > 20 {
+		targets = targets[:20]
+	}
+	if len(targets) == 0 {
+		return
+	}
+
+	store := newGCS()
+	type fetchResult struct {
+		runID  int64
+		errors map[string]string
+	}
+	ch := make(chan fetchResult, len(targets))
+	for _, r := range targets {
+		base := gcsBase(r.URL)
+		if base == "" {
+			ch <- fetchResult{r.ID, nil}
+			continue
+		}
+		go func(id int64, b, job string) {
+			step, container := stepContainer(job)
+			prefix := b + "artifacts/" + step + "/" + container + "/artifacts/"
+			_, files, err := store.listDir(prefix)
+			if err != nil {
+				ch <- fetchResult{id, nil}
+				return
+			}
+			f := findExtensionResultFile(files)
+			if f == "" {
+				ch <- fetchResult{id, nil}
+				return
+			}
+			data, err := store.fetch(gcsDownload + f)
+			if err != nil {
+				ch <- fetchResult{id, nil}
+				return
+			}
+			var tests []extensionTestResult
+			if json.Unmarshal(data, &tests) != nil {
+				ch <- fetchResult{id, nil}
+				return
+			}
+			m := map[string]string{}
+			for _, t := range tests {
+				if t.Error != "" {
+					m[t.Name] = t.Error
+				}
+			}
+			ch <- fetchResult{id, m}
+		}(r.ID, base, r.Job)
+	}
+
+	errorsByTest := map[string]string{}
+	for range len(targets) {
+		r := <-ch
+		for name, errText := range r.errors {
+			if _, exists := errorsByTest[name]; !exists {
+				errorsByTest[name] = errText
+			}
+		}
+	}
+
+	for i, f := range failures {
+		errText, ok := errorsByTest[f.TestName]
+		if !ok {
+			continue
+		}
+		for j, out := range f.Outputs {
+			if out.Output == "" {
+				failures[i].Outputs[j].Output = errText
+			}
+		}
+	}
 }
 
 // failuresFromRuns synthesizes RecentFailure data from the FailedTestNames
-// field on each run. Used as a fallback when the Sippy recent_failures API
-// is unavailable.
+// field on each run, used when Sippy recent_failures API is unavailable.
 func failuresFromRuns(runs []JobRun) []RecentFailure {
 	type testAcc struct {
 		count   int
@@ -1196,213 +1039,4 @@ func failuresFromRuns(runs []JobRun) []RecentFailure {
 		})
 	}
 	return result
-}
-
-func needsErrorEnrichment(failures []RecentFailure) bool {
-	for _, f := range failures {
-		hasOutput := false
-		for _, out := range f.Outputs {
-			if out.Output != "" {
-				hasOutput = true
-				break
-			}
-		}
-		if !hasOutput {
-			return true
-		}
-	}
-	return false
-}
-
-type candidateRun struct {
-	id    int64
-	names []string
-}
-
-func collectCandidateRuns(failures []RecentFailure, runs []JobRun) []candidateRun {
-	failureNames := map[string]bool{}
-	for _, f := range failures {
-		if !isSyntheticTest(f.TestName) {
-			failureNames[f.TestName] = true
-		}
-	}
-	var candidates []candidateRun
-	for _, r := range runs {
-		if realFailureCount(r) == 0 {
-			continue
-		}
-		var matched []string
-		for _, name := range r.FailedTestNames {
-			if failureNames[name] {
-				matched = append(matched, name)
-			}
-		}
-		if len(matched) > 0 {
-			candidates = append(candidates, candidateRun{id: r.ID, names: matched})
-		}
-	}
-	return candidates
-}
-
-// selectEnrichTargets picks runs covering the most distinct failures
-// (greedy set-cover bounded by maxTargets).
-func selectEnrichTargets(candidates []candidateRun, maxTargets int) []int64 {
-	var targets []int64
-	covered := map[string]bool{}
-	for len(targets) < maxTargets && len(candidates) > 0 {
-		bestIdx, bestNew := -1, 0
-		for i, c := range candidates {
-			newCount := 0
-			for _, n := range c.names {
-				if !covered[n] {
-					newCount++
-				}
-			}
-			if newCount > bestNew {
-				bestNew = newCount
-				bestIdx = i
-			}
-		}
-		if bestIdx < 0 || bestNew == 0 {
-			break
-		}
-		targets = append(targets, candidates[bestIdx].id)
-		for _, n := range candidates[bestIdx].names {
-			covered[n] = true
-		}
-		candidates = append(candidates[:bestIdx], candidates[bestIdx+1:]...)
-	}
-	return targets
-}
-
-func buildErrorMap(results []extensionTestResult) map[string]string {
-	errorByTest := map[string]string{}
-	for _, t := range results {
-		if t.Result != "failed" {
-			continue
-		}
-		errText := t.Error
-		if errText == "" && t.Output != "" {
-			errText = t.Output
-		}
-		if errText != "" {
-			errorByTest[t.Name] = errText
-		}
-	}
-	return errorByTest
-}
-
-func applyErrorEnrichment(failures []RecentFailure, runID int64, errorByTest map[string]string) {
-	for i := range failures {
-		for j := range failures[i].Outputs {
-			if failures[i].Outputs[j].RunID == runID && failures[i].Outputs[j].Output == "" {
-				if errText, ok := errorByTest[failures[i].TestName]; ok {
-					failures[i].Outputs[j].Output = errText
-				}
-			}
-		}
-	}
-}
-
-// enrichFailuresWithArtifacts fetches extension_test_result from recent
-// failing runs and populates error text into failure outputs. Falls back
-// to provision JUnit for pipeline step failures not covered by test results.
-func enrichFailuresWithArtifacts(failures []RecentFailure, runs []JobRun) {
-	runByID := map[int64]JobRun{}
-	for _, r := range runs {
-		runByID[r.ID] = r
-	}
-
-	candidates := collectCandidateRuns(failures, runs)
-	targets := selectEnrichTargets(candidates, maxEnrichTargets)
-
-	fmt.Fprintf(os.Stderr, "enriching: fetching test results from %d runs\n", len(targets))
-	store := newGCS()
-	for _, runID := range targets {
-		r := runByID[runID]
-		base := gcsBase(r.URL)
-		if base == "" {
-			continue
-		}
-		step, ctr := stepContainer(r.Job)
-		results := fetchExtensionResults(store, base, step, ctr)
-		if results == nil {
-			continue
-		}
-		applyErrorEnrichment(failures, runID, buildErrorMap(results))
-	}
-
-	enrichFromProvisionJUnit(failures, targets, runByID, store)
-}
-
-// enrichFromProvisionJUnit fetches provision JUnit XML for pipeline step
-// failures that weren't covered by extension_test_result (which only
-// contains E2E test results, not pipeline step outputs).
-func enrichFromProvisionJUnit(failures []RecentFailure, targets []int64, runByID map[int64]JobRun, store *gcs) {
-	unenriched := map[string]bool{}
-	for _, f := range failures {
-		if !strings.HasPrefix(f.TestName, "Run pipeline step ") {
-			continue
-		}
-		for _, out := range f.Outputs {
-			if out.Output == "" {
-				unenriched[f.TestName] = true
-				break
-			}
-		}
-	}
-	if len(unenriched) == 0 {
-		return
-	}
-
-	fmt.Fprintf(os.Stderr, "enriching: fetching provision JUnit for %d pipeline step failures\n", len(unenriched))
-	for _, runID := range targets {
-		r := runByID[runID]
-		base := gcsBase(r.URL)
-		if base == "" {
-			continue
-		}
-		step, _ := stepContainer(r.Job)
-		provPath := fmt.Sprintf("artifacts/%s/aro-hcp-provision-environment/artifacts/junit_entrypoint.xml", step)
-		data, err := store.artifact(base, provPath)
-		if err != nil {
-			continue
-		}
-		suites, err := parseJUnit(data)
-		if err != nil {
-			continue
-		}
-		errorByTest := map[string]string{}
-		for _, suite := range suites.Suites {
-			for _, tc := range suite.Cases {
-				if fail := tc.effectiveFailure(); fail != nil {
-					if msg := fail.errorMessage(); msg != "" {
-						errorByTest[tc.Name] = msg
-					}
-				}
-			}
-		}
-		applyErrorEnrichment(failures, runID, errorByTest)
-	}
-}
-
-func fetchExtensionResults(store *gcs, base, step, container string) []extensionTestResult {
-	prefix := base + fmt.Sprintf("artifacts/%s/%s/artifacts/", step, container)
-	_, files, err := store.listDir(prefix)
-	if err != nil {
-		return nil
-	}
-	f := findExtensionResultFile(files)
-	if f == "" {
-		return nil
-	}
-	data, err := store.fetch(gcsDownload + f)
-	if err != nil {
-		return nil
-	}
-	var tests []extensionTestResult
-	if err := json.Unmarshal(data, &tests); err != nil {
-		return nil
-	}
-	return tests
 }

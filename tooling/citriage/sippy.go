@@ -17,7 +17,6 @@ const (
 
 	ev2HashAnnotation   = "ev2.rollout/ARO-HCP"
 	ev2RegionAnnotation = "ev2.rollout/region"
-	ev2HashDisplayLen   = 12
 
 	syntheticTestPrefix  = "[sig-sippy]"
 	syntheticTestTimeout = "Job run should complete before timeout"
@@ -90,8 +89,9 @@ type JobRun struct {
 
 // FailureOutput pairs a run ID with the test's error output for that run.
 type FailureOutput struct {
-	RunID  int64  `json:"prow_job_run_id"`
-	Output string `json:"output"`
+	RunID           int64  `json:"prow_job_run_id"`
+	Output          string `json:"output"`
+	ExtractedErrors string `json:"-"`
 }
 
 // RecentFailure aggregates a test's failures across recent runs with per-run output.

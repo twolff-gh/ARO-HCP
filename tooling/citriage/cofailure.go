@@ -10,38 +10,35 @@ import (
 
 const (
 	maxCommonRunIDs       = 10
-	minCoFailRunCount     = 2   // test must fail in >=N runs to be eligible for pairwise comparison
-	minCoFailGroupSize    = 2   // minimum members to form a co-failure group
+	minCoFailRunCount     = 2   // test must fail in >=N runs to be eligible
+	minCoFailGroupSize    = 2   // minimum members to form a group
 	sparseDataMaxRuns     = 5   // adapt threshold when max runs/test is at or below this
 	adaptedThresholdFloor = 0.5 // lowered threshold for sparse data
 )
 
-// coFailureGroupJSON is a cluster of tests that consistently fail together.
 type coFailureGroupJSON struct {
-	Leader        string                `json:"leader"`
-	Members       []coFailureMemberJSON `json:"members"`
-	MinOverlapPct int                   `json:"min_overlap_pct"`
-	DistinctRuns  int                   `json:"distinct_runs"`
-	CommonRunIDs  []int64               `json:"common_run_ids"`
-	CommonEV2     []string              `json:"common_ev2_hashes,omitempty"`
-	CommonRegions []string              `json:"common_regions,omitempty"`
-	Onset         string                `json:"onset,omitempty"`
+	Leader              string                `json:"leader"`
+	Members             []coFailureMemberJSON `json:"members"`
+	MinOverlapPct       int                   `json:"min_overlap_pct"`
+	DistinctRuns        int                   `json:"distinct_runs"`
+	CommonRunIDs        []int64               `json:"common_run_ids"`
+	CommonRunsTruncated bool                  `json:"common_runs_truncated,omitempty"`
+	CommonEV2           []string              `json:"common_ev2_hashes,omitempty"`
+	CommonRegions       []string              `json:"common_regions,omitempty"`
+	Onset               string                `json:"onset,omitempty"`
 }
 
-// coFailureStatsJSON reports the parameters and results of the co-failure analysis pass.
 type coFailureStatsJSON struct {
-	Threshold        float64 `json:"threshold"`
-	AdaptedThreshold float64 `json:"adapted_threshold,omitempty"`
-	BlastRadius      int     `json:"blast_radius,omitempty"`
-	BlastExcluded    int     `json:"blast_excluded,omitempty"`
-	EligibleTests    int     `json:"eligible_tests"`
-	PairsChecked     int     `json:"pairs_checked"`
-	PairsAbove       int     `json:"pairs_above_threshold"`
-	MaxOverlapPct    int     `json:"max_overlap_pct"`
-	Reason           string  `json:"reason,omitempty"`
+	Threshold         float64 `json:"threshold"`
+	AdaptedThreshold  float64 `json:"adapted_threshold,omitempty"`
+	TotalFailingTests int     `json:"total_failing_tests"`
+	EligibleTests     int     `json:"eligible_tests"`
+	PairsChecked      int     `json:"pairs_checked"`
+	PairsAbove        int     `json:"pairs_above_threshold"`
+	MaxOverlapPct     int     `json:"max_overlap_pct"`
+	Reason            string  `json:"reason,omitempty"`
 }
 
-// coFailureMemberJSON describes one test within a co-failure group.
 type coFailureMemberJSON struct {
 	Test       string `json:"test"`
 	TotalFails int    `json:"total_failures"`
@@ -49,7 +46,6 @@ type coFailureMemberJSON struct {
 	SoloFails  int    `json:"solo_failures"`
 }
 
-// unionFind implements weighted quick-union with path compression for grouping co-failing tests.
 type unionFind struct {
 	parent map[string]string
 	rank   map[string]int
@@ -88,15 +84,10 @@ type coFailureEdge struct {
 	overlap float64
 }
 
-// buildTestRunMap indexes which runs each test failed in, excluding runs with
-// more than blastRadius failures (mass failures obscure pairwise signal).
-func buildTestRunMap(runs []JobRun, blastRadius int) (testRuns map[string]map[int64]bool, blastExcluded int) {
-	testRuns = map[string]map[int64]bool{}
+// buildTestRunMap indexes which runs each test failed in.
+func buildTestRunMap(runs []JobRun) map[string]map[int64]bool {
+	testRuns := map[string]map[int64]bool{}
 	for _, r := range runs {
-		if blastRadius > 0 && realFailureCount(r) > blastRadius {
-			blastExcluded++
-			continue
-		}
 		for _, name := range r.FailedTestNames {
 			if isSyntheticTest(name) {
 				continue
@@ -107,10 +98,128 @@ func buildTestRunMap(runs []JobRun, blastRadius int) (testRuns map[string]map[in
 			testRuns[name][r.ID] = true
 		}
 	}
-	return
+	return testRuns
 }
 
-// assembleCoFailureGroup builds the JSON representation of one co-failure cluster.
+// buildCoFailureGroups computes pairwise overlap between failing tests across runs
+// and clusters them via union-find when overlap exceeds the threshold.
+func buildCoFailureGroups(runs []JobRun, threshold float64) ([]coFailureGroupJSON, *coFailureStatsJSON) {
+	if threshold <= 0 {
+		return nil, nil
+	}
+
+	testRuns := buildTestRunMap(runs)
+
+	var tests []string
+	for name, rids := range testRuns {
+		if len(rids) >= minCoFailRunCount {
+			tests = append(tests, name)
+		}
+	}
+	slices.Sort(tests)
+
+	totalFailing := len(testRuns)
+
+	if len(tests) < minCoFailGroupSize {
+		return nil, &coFailureStatsJSON{
+			Threshold:         threshold,
+			TotalFailingTests: totalFailing,
+			EligibleTests:     len(tests),
+			Reason:            fmt.Sprintf("%d failing tests, %d with >=%d runs", totalFailing, len(tests), minCoFailRunCount),
+		}
+	}
+
+	effectiveThreshold := threshold
+	maxRunsPerTest := 0
+	for _, name := range tests {
+		if n := len(testRuns[name]); n > maxRunsPerTest {
+			maxRunsPerTest = n
+		}
+	}
+	adapted := maxRunsPerTest > 0 && maxRunsPerTest <= sparseDataMaxRuns && threshold > adaptedThresholdFloor
+	if adapted {
+		effectiveThreshold = adaptedThresholdFloor
+	}
+
+	uf := newUnionFind()
+	var edges []coFailureEdge
+	pairsChecked := 0
+	pairsAbove := 0
+	maxOverlap := 0.0
+	for i := 0; i < len(tests); i++ {
+		for j := i + 1; j < len(tests); j++ {
+			inter := setIntersectionCount(testRuns[tests[i]], testRuns[tests[j]])
+			if inter == 0 {
+				continue
+			}
+			pairsChecked++
+			denom := min(len(testRuns[tests[i]]), len(testRuns[tests[j]]))
+			overlap := float64(inter) / float64(denom)
+			if overlap > maxOverlap {
+				maxOverlap = overlap
+			}
+			if overlap >= effectiveThreshold {
+				pairsAbove++
+				uf.union(tests[i], tests[j])
+				edges = append(edges, coFailureEdge{tests[i], tests[j], overlap})
+			}
+		}
+	}
+
+	stats := &coFailureStatsJSON{
+		Threshold:         threshold,
+		TotalFailingTests: totalFailing,
+		EligibleTests:     len(tests),
+		PairsChecked:      pairsChecked,
+		PairsAbove:        pairsAbove,
+		MaxOverlapPct:     int(maxOverlap * 100),
+	}
+	if adapted {
+		stats.AdaptedThreshold = effectiveThreshold
+	}
+	if pairsAbove == 0 {
+		stats.Reason = fmt.Sprintf("best overlap %d%% is below %d%% threshold", int(maxOverlap*100), int(effectiveThreshold*100))
+		if adapted {
+			stats.Reason += fmt.Sprintf(" (adapted from %d%% due to sparse data: max %d runs/test)", int(threshold*100), maxRunsPerTest)
+		}
+	}
+
+	groupMembers := map[string][]string{}
+	for _, name := range tests {
+		root := uf.find(name)
+		groupMembers[root] = append(groupMembers[root], name)
+	}
+
+	runByID := map[int64]JobRun{}
+	for _, r := range runs {
+		runByID[r.ID] = r
+	}
+
+	var result []coFailureGroupJSON
+	for _, members := range groupMembers {
+		if len(members) < minCoFailGroupSize {
+			continue
+		}
+		result = append(result, assembleCoFailureGroup(members, testRuns, edges, uf, runByID))
+	}
+
+	slices.SortFunc(result, func(a, b coFailureGroupJSON) int {
+		totalA, totalB := 0, 0
+		for _, m := range a.Members {
+			totalA += m.TotalFails
+		}
+		for _, m := range b.Members {
+			totalB += m.TotalFails
+		}
+		if totalA != totalB {
+			return cmp.Compare(totalB, totalA)
+		}
+		return cmp.Compare(a.Leader, b.Leader)
+	})
+
+	return result, stats
+}
+
 func assembleCoFailureGroup(
 	members []string,
 	testRuns map[string]map[int64]bool,
@@ -166,7 +275,8 @@ func assembleCoFailureGroup(
 	}
 
 	outputRuns := commonRuns
-	if len(outputRuns) > maxCommonRunIDs {
+	commonRunsTruncated := len(outputRuns) > maxCommonRunIDs
+	if commonRunsTruncated {
 		outputRuns = outputRuns[:maxCommonRunIDs]
 	}
 
@@ -206,144 +316,18 @@ func assembleCoFailureGroup(
 	}
 
 	return coFailureGroupJSON{
-		Leader:        leader,
-		Members:       memberDetails,
-		MinOverlapPct: int(minOverlap * 100),
-		DistinctRuns:  len(commonRuns),
-		CommonRunIDs:  outputRuns,
-		CommonEV2:     slices.Sorted(maps.Keys(ev2Set)),
-		CommonRegions: slices.Sorted(maps.Keys(regionSet)),
-		Onset:         onsetStr,
+		Leader:              leader,
+		Members:             memberDetails,
+		MinOverlapPct:       int(minOverlap * 100),
+		DistinctRuns:        len(commonRuns),
+		CommonRunIDs:        outputRuns,
+		CommonRunsTruncated: commonRunsTruncated,
+		CommonEV2:           slices.Sorted(maps.Keys(ev2Set)),
+		CommonRegions:       slices.Sorted(maps.Keys(regionSet)),
+		Onset:               onsetStr,
 	}
 }
 
-// buildCoFailureGroups computes pairwise overlap between failing tests across runs
-// and clusters them via union-find when overlap exceeds the threshold.
-func buildCoFailureGroups(runs []JobRun, threshold float64, blastRadius int) ([]coFailureGroupJSON, *coFailureStatsJSON) {
-	if threshold <= 0 {
-		return nil, nil
-	}
-
-	testRuns, blastExcluded := buildTestRunMap(runs, blastRadius)
-
-	tests := make([]string, 0, len(testRuns))
-	for name, rids := range testRuns {
-		if len(rids) >= minCoFailRunCount {
-			tests = append(tests, name)
-		}
-	}
-	slices.Sort(tests)
-
-	if len(tests) < minCoFailGroupSize {
-		reason := fmt.Sprintf("fewer than %d tests fail in multiple runs", minCoFailGroupSize)
-		if len(testRuns) > 0 && len(tests) < minCoFailGroupSize {
-			reason = fmt.Sprintf("%d failing tests but only %d fail in >=%d runs (need >=%d for pairwise comparison)", len(testRuns), len(tests), minCoFailRunCount, minCoFailGroupSize)
-		}
-		return nil, &coFailureStatsJSON{
-			Threshold:     threshold,
-			BlastRadius:   blastRadius,
-			BlastExcluded: blastExcluded,
-			EligibleTests: len(tests),
-			Reason:        reason,
-		}
-	}
-
-	// Adaptive threshold: lower to 0.5 when eligible tests have few runs
-	effectiveThreshold := threshold
-	maxRunsPerTest := 0
-	for _, name := range tests {
-		if n := len(testRuns[name]); n > maxRunsPerTest {
-			maxRunsPerTest = n
-		}
-	}
-	adapted := maxRunsPerTest > 0 && maxRunsPerTest <= sparseDataMaxRuns && threshold > adaptedThresholdFloor
-	if adapted {
-		effectiveThreshold = adaptedThresholdFloor
-	}
-
-	uf := newUnionFind()
-	var edges []coFailureEdge
-	pairsChecked := 0
-	pairsAbove := 0
-	maxOverlap := 0.0
-	for i := 0; i < len(tests); i++ {
-		for j := i + 1; j < len(tests); j++ {
-			inter := setIntersectionCount(testRuns[tests[i]], testRuns[tests[j]])
-			if inter == 0 {
-				continue
-			}
-			pairsChecked++
-			denom := min(len(testRuns[tests[i]]), len(testRuns[tests[j]]))
-			overlap := float64(inter) / float64(denom)
-			if overlap > maxOverlap {
-				maxOverlap = overlap
-			}
-			if overlap >= effectiveThreshold {
-				pairsAbove++
-				uf.union(tests[i], tests[j])
-				edges = append(edges, coFailureEdge{tests[i], tests[j], overlap})
-			}
-		}
-	}
-
-	stats := &coFailureStatsJSON{
-		Threshold:     threshold,
-		BlastRadius:   blastRadius,
-		BlastExcluded: blastExcluded,
-		EligibleTests: len(tests),
-		PairsChecked:  pairsChecked,
-		PairsAbove:    pairsAbove,
-		MaxOverlapPct: int(maxOverlap * 100),
-	}
-	if adapted {
-		stats.AdaptedThreshold = effectiveThreshold
-	}
-	if pairsAbove == 0 {
-		stats.Reason = fmt.Sprintf("best overlap %d%% is below %d%% threshold", int(maxOverlap*100), int(effectiveThreshold*100))
-		if adapted {
-			stats.Reason += fmt.Sprintf(" (adapted from %d%% due to sparse data: max %d runs/test)", int(threshold*100), maxRunsPerTest)
-		} else {
-			stats.Reason += " (low run count reduces co-failure sensitivity)"
-		}
-	}
-
-	groupMembers := map[string][]string{}
-	for _, name := range tests {
-		root := uf.find(name)
-		groupMembers[root] = append(groupMembers[root], name)
-	}
-
-	runByID := map[int64]JobRun{}
-	for _, r := range runs {
-		runByID[r.ID] = r
-	}
-
-	var result []coFailureGroupJSON
-	for _, members := range groupMembers {
-		if len(members) < minCoFailGroupSize {
-			continue
-		}
-		result = append(result, assembleCoFailureGroup(members, testRuns, edges, uf, runByID))
-	}
-
-	slices.SortFunc(result, func(a, b coFailureGroupJSON) int {
-		totalA, totalB := 0, 0
-		for _, m := range a.Members {
-			totalA += m.TotalFails
-		}
-		for _, m := range b.Members {
-			totalB += m.TotalFails
-		}
-		if totalA != totalB {
-			return cmp.Compare(totalB, totalA)
-		}
-		return cmp.Compare(a.Leader, b.Leader)
-	})
-
-	return result, stats
-}
-
-// setIntersectionCount returns the number of elements in both sets.
 func setIntersectionCount(a, b map[int64]bool) int {
 	if len(a) > len(b) {
 		a, b = b, a

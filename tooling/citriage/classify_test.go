@@ -4,8 +4,7 @@ import (
 	"testing"
 )
 
-func TestClassifyErrors_Cascade(t *testing.T) {
-	// 10+ failures with one dominant error => cascade
+func TestClassifyErrors_LargeGroup(t *testing.T) {
 	tests := make([]extensionTestResult, 12)
 	for i := range tests {
 		tests[i] = extensionTestResult{
@@ -19,8 +18,8 @@ func TestClassifyErrors_Cascade(t *testing.T) {
 	if scale.FailedTestCount != 12 {
 		t.Errorf("expected 12 failed, got %d", scale.FailedTestCount)
 	}
-	if !scale.IsCascade {
-		t.Error("expected cascade when 12 tests share one error")
+	if scale.LargestGroupPct != 100 {
+		t.Errorf("expected 100%% largest group, got %d%%", scale.LargestGroupPct)
 	}
 	if len(groups) != 1 {
 		t.Fatalf("expected 1 error group, got %d", len(groups))
@@ -30,8 +29,7 @@ func TestClassifyErrors_Cascade(t *testing.T) {
 	}
 }
 
-func TestClassifyErrors_NotCascade(t *testing.T) {
-	// 3 different errors across 3 tests => not cascade
+func TestClassifyErrors_DistinctErrors(t *testing.T) {
 	tests := []extensionTestResult{
 		{Name: "test_A", Result: "failed", Error: "timeout waiting for cluster"},
 		{Name: "test_B", Result: "failed", Error: "resource group not found"},
@@ -39,8 +37,8 @@ func TestClassifyErrors_NotCascade(t *testing.T) {
 	}
 	_, scale := classifyErrors(tests, 0)
 
-	if scale.IsCascade {
-		t.Error("3 distinct errors across 3 tests should not be cascade")
+	if scale.LargestGroupPct > 34 {
+		t.Errorf("3 distinct errors should each be ~33%%, got largest=%d%%", scale.LargestGroupPct)
 	}
 	if scale.FailedTestCount != 3 {
 		t.Errorf("expected 3 failed, got %d", scale.FailedTestCount)
@@ -61,29 +59,6 @@ func TestClassifyErrors_PassingOnly(t *testing.T) {
 	}
 }
 
-func TestClassifyErrors_RegroupingOnSingletons(t *testing.T) {
-	// Many failures with different UUIDs/timestamps in the error but same innermost cause.
-	// First-pass grouping produces singletons; regrouping should coalesce.
-	var tests []extensionTestResult
-	for i := range 10 {
-		tests = append(tests, extensionTestResult{
-			Name:   "test_" + string(rune('A'+i)),
-			Result: "failed",
-			Error:  "failed to create resource group rg-" + string(rune('a'+i)) + "-abc123, caused by: RoleAssignmentLimitExceeded",
-		})
-	}
-
-	groups, scale := classifyErrors(tests, 0)
-
-	if scale.FailedTestCount != 10 {
-		t.Errorf("expected 10 failed, got %d", scale.FailedTestCount)
-	}
-	// After regrouping by innermost cause, all should land in one group
-	if len(groups) > 3 {
-		t.Errorf("expected regrouping to reduce groups, got %d groups", len(groups))
-	}
-}
-
 func TestExtractInnermostCause(t *testing.T) {
 	cases := []struct {
 		input string
@@ -95,7 +70,7 @@ func TestExtractInnermostCause(t *testing.T) {
 		{"no cause chain here", ""},
 	}
 	for _, tc := range cases {
-		got := extractInnermostCause(tc.input)
+		got, _ := extractInnermostCause(tc.input)
 		if got != tc.want {
 			t.Errorf("extractInnermostCause(%q) = %q, want %q", tc.input, got, tc.want)
 		}
@@ -115,15 +90,6 @@ func TestExtractSourceFile(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("extractSourceFile(%q) = %q, want %q", tc.input, got, tc.want)
 		}
-	}
-}
-
-func TestIsDiagnosticallyEmpty(t *testing.T) {
-	if !isDiagnosticallyEmpty("err") {
-		t.Error("3-char error should be diagnostically empty")
-	}
-	if isDiagnosticallyEmpty("this is a sufficiently long error message for diagnosis") {
-		t.Error("long error should not be diagnostically empty")
 	}
 }
 

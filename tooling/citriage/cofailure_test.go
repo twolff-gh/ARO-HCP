@@ -56,18 +56,18 @@ func TestBuildCoFailureGroups_Basic(t *testing.T) {
 		{ID: 4, Timestamp: 4000, FailedTestNames: []string{"TestD"}},
 		{ID: 5, Timestamp: 5000, FailedTestNames: []string{"TestD"}},
 	}
-	groups, _ := buildCoFailureGroups(runs, 0.8, 0)
+	groups, stats := buildCoFailureGroups(runs, 0.8)
 
 	if len(groups) != 1 {
 		t.Fatalf("expected 1 group, got %d", len(groups))
+	}
+	if stats.TotalFailingTests != 4 {
+		t.Errorf("total_failing_tests = %d, want 4", stats.TotalFailingTests)
 	}
 
 	g := groups[0]
 	if len(g.Members) != 3 {
 		t.Errorf("expected 3 members, got %d", len(g.Members))
-	}
-	if g.Leader != "TestA" && g.Leader != "TestB" {
-		t.Errorf("leader = %s, expected TestA or TestB (both have 3 failures)", g.Leader)
 	}
 	for _, m := range g.Members {
 		if m.Test == "TestD" {
@@ -94,7 +94,7 @@ func TestBuildCoFailureGroups_NoGroups(t *testing.T) {
 		{ID: 4, Timestamp: 4000, FailedTestNames: []string{"TestB"}},
 	}
 
-	groups, stats := buildCoFailureGroups(runs, 0.8, 0)
+	groups, stats := buildCoFailureGroups(runs, 0.8)
 	if len(groups) != 0 {
 		t.Errorf("expected 0 groups, got %d", len(groups))
 	}
@@ -104,8 +104,11 @@ func TestBuildCoFailureGroups_NoGroups(t *testing.T) {
 	if stats.EligibleTests != 2 {
 		t.Errorf("eligible_tests = %d, want 2", stats.EligibleTests)
 	}
+	if stats.TotalFailingTests != 2 {
+		t.Errorf("total_failing_tests = %d, want 2", stats.TotalFailingTests)
+	}
 	if stats.MaxOverlapPct != 0 {
-		t.Errorf("max_overlap_pct = %d, want 0 (no shared runs)", stats.MaxOverlapPct)
+		t.Errorf("max_overlap_pct = %d, want 0", stats.MaxOverlapPct)
 	}
 	if stats.Reason == "" {
 		t.Error("expected non-empty reason when no groups formed")
@@ -118,7 +121,7 @@ func TestBuildCoFailureGroups_Disabled(t *testing.T) {
 		{ID: 2, Timestamp: 2000, FailedTestNames: []string{"TestA", "TestB"}},
 	}
 
-	groups, stats := buildCoFailureGroups(runs, 0, 0)
+	groups, stats := buildCoFailureGroups(runs, 0)
 	if groups != nil {
 		t.Errorf("expected nil with threshold=0, got %v", groups)
 	}
@@ -139,7 +142,7 @@ func TestBuildCoFailureGroups_BelowThreshold(t *testing.T) {
 		{ID: 8, Timestamp: 8000, FailedTestNames: []string{"TestB"}},
 	}
 
-	groups, _ := buildCoFailureGroups(runs, 0.8, 0)
+	groups, _ := buildCoFailureGroups(runs, 0.8)
 	if len(groups) != 0 {
 		t.Errorf("expected 0 groups (overlap 2/5=0.4 < 0.8), got %d", len(groups))
 	}
@@ -154,7 +157,7 @@ func TestBuildCoFailureGroups_SoloFailures(t *testing.T) {
 		{ID: 5, Timestamp: 5000, FailedTestNames: []string{"TestA"}},
 	}
 
-	groups, _ := buildCoFailureGroups(runs, 0.8, 0)
+	groups, _ := buildCoFailureGroups(runs, 0.8)
 	if len(groups) != 1 {
 		t.Fatalf("expected 1 group, got %d", len(groups))
 	}
@@ -181,7 +184,7 @@ func TestBuildCoFailureGroups_SyntheticFiltered(t *testing.T) {
 		{ID: 2, Timestamp: 2000, FailedTestNames: []string{"[sig-sippy] infra", "TestA"}},
 	}
 
-	groups, _ := buildCoFailureGroups(runs, 0.8, 0)
+	groups, _ := buildCoFailureGroups(runs, 0.8)
 	if len(groups) != 0 {
 		t.Errorf("expected 0 groups (synthetic should be filtered), got %d", len(groups))
 	}
@@ -195,7 +198,7 @@ func TestBuildCoFailureGroups_TwoSeparateGroups(t *testing.T) {
 		{ID: 4, Timestamp: 4000, FailedTestNames: []string{"TestC", "TestD"}},
 	}
 
-	groups, _ := buildCoFailureGroups(runs, 0.8, 0)
+	groups, _ := buildCoFailureGroups(runs, 0.8)
 	if len(groups) != 2 {
 		t.Fatalf("expected 2 groups, got %d", len(groups))
 	}
@@ -219,71 +222,34 @@ func TestBuildCoFailureGroups_SingleFailureTestExcluded(t *testing.T) {
 		{ID: 2, Timestamp: 2000, FailedTestNames: []string{"TestA"}},
 	}
 
-	groups, _ := buildCoFailureGroups(runs, 0.8, 0)
+	groups, _ := buildCoFailureGroups(runs, 0.8)
 	if len(groups) != 0 {
 		t.Errorf("expected 0 groups (TestB only has 1 failure), got %d", len(groups))
 	}
 }
 
-func TestBuildCoFailureGroups_BlastRadius(t *testing.T) {
-	// Two catastrophic runs (>3 failures) link TestA-TestE together.
-	// Two normal runs provide genuine TestA+TestB co-failure signal.
-	// With blast=3, the catastrophic runs are excluded, so only TestA+TestB form a group.
+func TestBuildCoFailureGroups_CascadeRunsIncluded(t *testing.T) {
+	// Cascade runs (many failures) are now included — no blast filtering.
+	// All 5 tests co-fail across 2 cascade runs.
 	runs := []JobRun{
 		{ID: 1, Timestamp: 1000, FailedTestNames: []string{"TestA", "TestB", "TestC", "TestD", "TestE"}},
 		{ID: 2, Timestamp: 2000, FailedTestNames: []string{"TestA", "TestB", "TestC", "TestD", "TestE"}},
-		{ID: 3, Timestamp: 3000, FailedTestNames: []string{"TestA", "TestB"}},
-		{ID: 4, Timestamp: 4000, FailedTestNames: []string{"TestA", "TestB"}},
 	}
 
-	// Without blast radius: all 5 tests form one group
-	groupsNoBR, _ := buildCoFailureGroups(runs, 0.8, 0)
-	if len(groupsNoBR) != 1 {
-		t.Fatalf("without blast radius: expected 1 group, got %d", len(groupsNoBR))
+	groups, stats := buildCoFailureGroups(runs, 0.8)
+	if len(groups) != 1 {
+		t.Fatalf("expected 1 group from cascade runs, got %d", len(groups))
 	}
-	if len(groupsNoBR[0].Members) != 5 {
-		t.Errorf("without blast radius: expected 5 members, got %d", len(groupsNoBR[0].Members))
+	if len(groups[0].Members) != 5 {
+		t.Errorf("expected 5 members, got %d", len(groups[0].Members))
 	}
-
-	// With blast=3: catastrophic runs excluded, only TestA+TestB remain as co-failure
-	groupsBR, stats := buildCoFailureGroups(runs, 0.8, 3)
-	if stats.BlastExcluded != 2 {
-		t.Errorf("expected 2 blast-excluded runs, got %d", stats.BlastExcluded)
-	}
-	if len(groupsBR) != 1 {
-		t.Fatalf("with blast radius: expected 1 group (TestA+TestB), got %d", len(groupsBR))
-	}
-	if len(groupsBR[0].Members) != 2 {
-		t.Errorf("with blast radius: expected 2 members, got %d", len(groupsBR[0].Members))
-	}
-	for _, m := range groupsBR[0].Members {
-		if m.Test != "TestA" && m.Test != "TestB" {
-			t.Errorf("unexpected member %s in blast-filtered group", m.Test)
-		}
-	}
-}
-
-func TestBuildCoFailureGroups_BlastRadiusDisabled(t *testing.T) {
-	runs := []JobRun{
-		{ID: 1, Timestamp: 1000, FailedTestNames: []string{"TestA", "TestB", "TestC"}},
-		{ID: 2, Timestamp: 2000, FailedTestNames: []string{"TestA", "TestB", "TestC"}},
-	}
-
-	// blast=0 means disabled — should behave same as without blast
-	groups, stats := buildCoFailureGroups(runs, 0.8, 0)
-	if len(groups) != 1 || len(groups[0].Members) != 3 {
-		t.Errorf("blast=0 should not filter; got %d groups", len(groups))
-	}
-	if stats.BlastExcluded != 0 {
-		t.Errorf("blast=0: expected 0 excluded, got %d", stats.BlastExcluded)
+	if stats.TotalFailingTests != 5 {
+		t.Errorf("total_failing_tests = %d, want 5", stats.TotalFailingTests)
 	}
 }
 
 func TestBuildCoFailureGroups_AdaptiveThreshold(t *testing.T) {
-	// TestA fails in runs {1,2,3}, TestB fails in runs {1,3,4}
-	// Intersection = {1,3} = 2, min(3,3) = 3 → overlap = 2/3 ≈ 66%
-	// At threshold=0.8, 66% < 80% → no group normally.
-	// With adaptive threshold (max 3 runs/test ≤ 5), threshold drops to 0.5 → group forms.
+	// Overlap = 2/3 ≈ 66%. At 0.8 threshold, no group. Adaptive drops to 0.5 → group forms.
 	runs := []JobRun{
 		{ID: 1, Timestamp: 1000, FailedTestNames: []string{"TestA", "TestB"}},
 		{ID: 2, Timestamp: 2000, FailedTestNames: []string{"TestA"}},
@@ -291,7 +257,7 @@ func TestBuildCoFailureGroups_AdaptiveThreshold(t *testing.T) {
 		{ID: 4, Timestamp: 4000, FailedTestNames: []string{"TestB"}},
 	}
 
-	groups, stats := buildCoFailureGroups(runs, 0.8, 0)
+	groups, stats := buildCoFailureGroups(runs, 0.8)
 	if len(groups) != 1 {
 		t.Fatalf("adaptive threshold should form 1 group (66%% >= 50%%), got %d", len(groups))
 	}
@@ -304,7 +270,6 @@ func TestBuildCoFailureGroups_AdaptiveThreshold(t *testing.T) {
 }
 
 func TestBuildCoFailureGroups_NoAdaptationWithManyRuns(t *testing.T) {
-	// When tests have >5 runs, no adaptation occurs
 	runs := []JobRun{
 		{ID: 1, Timestamp: 1000, FailedTestNames: []string{"TestA", "TestB"}},
 		{ID: 2, Timestamp: 2000, FailedTestNames: []string{"TestA", "TestB"}},
@@ -315,8 +280,7 @@ func TestBuildCoFailureGroups_NoAdaptationWithManyRuns(t *testing.T) {
 		{ID: 7, Timestamp: 7000, FailedTestNames: []string{"TestB"}},
 	}
 
-	// TestA has 6 runs (>5), so no adaptation. Overlap = 2/3 = 66% < 80%
-	groups, stats := buildCoFailureGroups(runs, 0.8, 0)
+	groups, stats := buildCoFailureGroups(runs, 0.8)
 	if len(groups) != 0 {
 		t.Errorf("expected 0 groups (no adaptation with >5 runs), got %d", len(groups))
 	}
@@ -326,14 +290,13 @@ func TestBuildCoFailureGroups_NoAdaptationWithManyRuns(t *testing.T) {
 }
 
 func TestBuildCoFailureGroups_NoAdaptationWhenThresholdAlreadyLow(t *testing.T) {
-	// When user already sets threshold ≤ 0.5, no adaptation needed
 	runs := []JobRun{
 		{ID: 1, Timestamp: 1000, FailedTestNames: []string{"TestA", "TestB"}},
 		{ID: 2, Timestamp: 2000, FailedTestNames: []string{"TestA"}},
 		{ID: 3, Timestamp: 3000, FailedTestNames: []string{"TestB"}},
 	}
 
-	groups, stats := buildCoFailureGroups(runs, 0.5, 0)
+	groups, stats := buildCoFailureGroups(runs, 0.5)
 	if stats.AdaptedThreshold != 0 {
 		t.Errorf("should not adapt when threshold already ≤ 0.5, got adapted=%v", stats.AdaptedThreshold)
 	}

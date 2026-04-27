@@ -8,12 +8,6 @@ import (
 	"io"
 	"os"
 	"strings"
-	"sync"
-)
-
-const (
-	maxOutputLinesInline = 100
-	outputHeadTailLines  = 50
 )
 
 // digContext holds state for fetching artifacts from a single CI run.
@@ -86,18 +80,8 @@ func runDig(args []string) error {
 		runID, dig.summary.Name, dig.summary.OverallResult, dig.summary.URL)
 
 	switch what {
-	case "prefetch":
-		n := dig.Prefetch()
-		fmt.Fprintf(os.Stderr, "Cached %d artifacts for run %s\n", n, runID)
-		return nil
 	case "tests":
-		go dig.Prefetch()
 		return dig.Tests()
-	case "output":
-		if len(rest) == 0 {
-			return fmt.Errorf("usage: dig <run-id> output <test-name>")
-		}
-		return dig.Output(strings.Join(rest, " "))
 	case "azure":
 		if len(rest) == 0 {
 			return fmt.Errorf("usage: dig <run-id> azure <test-name>")
@@ -128,7 +112,7 @@ func runDig(args []string) error {
 	case "extract":
 		return dig.Extract()
 	default:
-		return dig.Raw(what)
+		return fmt.Errorf("unknown dig subcommand: %s", what)
 	}
 }
 
@@ -145,7 +129,7 @@ func stepContainer(job string) (string, string) {
 	case strings.Contains(job, "prod"):
 		return "prod-e2e-parallel", "aro-hcp-test-persistent"
 	default:
-		return "e2e-parallel", "aro-hcp-test-local"
+		return "e2e-parallel", "aro-hcp-test-local-run"
 	}
 }
 
@@ -155,60 +139,6 @@ func (d *digContext) testArtifactPrefix() string {
 
 func (d *digContext) testArtifactDir(testName string) string {
 	return fmt.Sprintf("artifacts/%s/%s/artifacts/%s/", d.step, d.container, sanitizeTest(testName))
-}
-
-func (d *digContext) Prefetch() int {
-	paths := []string{
-		"artifacts/ci-operator-metrics.json",
-		"artifacts/ci-operator-step-graph.json",
-		"artifacts/junit_operator.xml",
-		"podinfo.json",
-		"artifacts/build-resources/events.json",
-	}
-	if isPresubmitJob(d.summary.Name) {
-		paths = append(paths,
-			fmt.Sprintf("artifacts/%s/aro-hcp-provision-environment/artifacts/junit_entrypoint.xml", d.step),
-			fmt.Sprintf("artifacts/%s/aro-hcp-gather-observability/artifacts/alerts.json", d.step),
-		)
-	}
-	paths = append(paths,
-		fmt.Sprintf("artifacts/%s/%s/artifacts/identities-pool-state.yaml", d.step, d.container),
-	)
-
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	cached := 0
-
-	for _, path := range paths {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if _, err := d.store.artifact(d.base, path); err == nil {
-				mu.Lock()
-				cached++
-				mu.Unlock()
-			}
-		}()
-	}
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		_, files, err := d.store.listDir(d.testArtifactPrefix())
-		if err != nil {
-			return
-		}
-		if f := findExtensionResultFile(files); f != "" {
-			if _, err := d.store.fetch(gcsDownload + f); err == nil {
-				mu.Lock()
-				cached++
-				mu.Unlock()
-			}
-		}
-	}()
-
-	wg.Wait()
-	return cached
 }
 
 // extensionTestResult is a single test result from the extension_test_result JSON artifact.
@@ -243,28 +173,6 @@ type testsJSON struct {
 	Skipped     int              `json:"skipped"`
 }
 
-type outputJSON struct {
-	TestName    string  `json:"test_name"`
-	Result      string  `json:"result"`
-	DurationSec float64 `json:"duration_seconds"`
-	Error       string  `json:"error,omitempty"`
-	Output      string  `json:"output"`
-	ArtifactURL string  `json:"artifact_url"`
-}
-
-func truncateOutput(output string) (lineCount int, head, tail string) {
-	if output == "" {
-		return 0, "", ""
-	}
-	lines := strings.Split(strings.TrimRight(output, "\n"), "\n")
-	if len(lines) <= maxOutputLinesInline {
-		return len(lines), output, ""
-	}
-	return len(lines),
-		strings.Join(lines[:outputHeadTailLines], "\n"),
-		strings.Join(lines[len(lines)-outputHeadTailLines:], "\n")
-}
-
 func (d *digContext) Tests() error {
 	_, files, err := d.store.listDir(d.testArtifactPrefix())
 	if err != nil {
@@ -276,7 +184,7 @@ func (d *digContext) Tests() error {
 	if data, err := d.store.artifact(d.base, "artifacts/junit_operator.xml"); err == nil {
 		return d.testsFromJUnit(data, "junit_operator.xml")
 	}
-	return d.testsNoResults()
+	return d.emitJSON("tests", noResultsJSON{Message: "No test results found"})
 }
 
 func (d *digContext) testsFromExtension(extURL string) error {
@@ -303,14 +211,14 @@ func (d *digContext) testsFromExtension(extURL string) error {
 			skipped++
 			continue // exclude skipped from output
 		}
-		outputLines, _, _ := truncateOutput(t.Output)
+		outputLines := strings.Count(t.Output, "\n")
 		r := testResultJSON{
 			Name:        t.Name,
 			Result:      t.Result,
 			DurationSec: float64(t.Duration) / 1000.0,
 			StartTime:   t.StartTime,
 			EndTime:     t.EndTime,
-			Error:       stripGoPointers(t.Error),
+			Error:       t.Error,
 			OutputLines: outputLines,
 			ArtifactURL: gcsWeb + d.base + d.testArtifactDir(t.Name),
 			Corrupted:   t.StartTime == t.EndTime,
@@ -325,27 +233,6 @@ func (d *digContext) testsFromExtension(extURL string) error {
 		Passed:      passed,
 		Skipped:     skipped,
 	})
-}
-
-func (d *digContext) Output(testName string) error {
-	tests, err := d.loadTestResults()
-	if err != nil {
-		return err
-	}
-	target := strings.ToLower(testName)
-	for _, test := range tests {
-		if strings.Contains(strings.ToLower(test.Name), target) {
-			return d.emitJSON("output", outputJSON{
-				TestName:    test.Name,
-				Result:      test.Result,
-				DurationSec: float64(test.Duration) / 1000.0,
-				Error:       stripGoPointers(test.Error),
-				Output:      test.Output,
-				ArtifactURL: gcsWeb + d.base + d.testArtifactDir(test.Name),
-			})
-		}
-	}
-	return fmt.Errorf("no test matching %q", testName)
 }
 
 func (d *digContext) loadTestResults() ([]extensionTestResult, error) {
@@ -445,7 +332,7 @@ func (d *digContext) testsFromJUnit(data []byte, source string) error {
 			if fail := tc.effectiveFailure(); fail != nil {
 				failed++
 				r.Result = "failed"
-				r.Error = stripGoPointers(fail.errorMessage())
+				r.Error = fail.errorMessage()
 			} else {
 				passed++
 				r.Result = "passed"
@@ -494,33 +381,6 @@ type messageJSON struct {
 type rawJSON struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`
-}
-
-func (d *digContext) testsNoResults() error {
-	data, err := d.store.artifact(d.base, "artifacts/ci-operator-step-graph.json")
-	if err != nil {
-		return d.emitJSON("tests", noResultsJSON{
-			Message: "No test results found. The run likely failed before tests started.",
-		})
-	}
-
-	var steps []stepGraphEntry
-	if err := json.Unmarshal(data, &steps); err != nil {
-		return d.emitJSON("tests", noResultsJSON{
-			Message: "No test results found. Step graph unparseable.",
-		})
-	}
-
-	var failedSteps []stepGraphEntry
-	for _, s := range steps {
-		if s.Failed {
-			failedSteps = append(failedSteps, s)
-		}
-	}
-	return d.emitJSON("tests", noResultsJSON{
-		Message:     "No test results found. The run likely failed before tests started.",
-		FailedSteps: failedSteps,
-	})
 }
 
 // --- Azure ---
@@ -735,20 +595,6 @@ func (d *digContext) Alerts() error {
 }
 
 // --- Raw ---
-
-func (d *digContext) Raw(path string) error {
-	data, err := d.store.artifact(d.base, path)
-	if err != nil {
-		return err
-	}
-	if json.Valid(data) {
-		return d.emitJSON("raw", json.RawMessage(data))
-	}
-	return d.emitJSON("raw", rawJSON{
-		Path:    path,
-		Content: string(data),
-	})
-}
 
 // --- Classify: structural error grouping + cascade detection ---
 

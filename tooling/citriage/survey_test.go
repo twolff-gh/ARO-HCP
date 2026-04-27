@@ -89,24 +89,6 @@ func TestRealFailureCount(t *testing.T) {
 	}
 }
 
-func TestStripGoPointers(t *testing.T) {
-	tests := []struct {
-		in, want string
-	}{
-		{"no pointers here", "no pointers here"},
-		{"value at 0x00c0001a4b80 is wrong", "value at  is wrong"},
-		{"<*v1.Pod | 0x00c0001a4b80>: had error", "had error"},
-		{"short 0x1f is fine", "short 0x1f is fine"},
-		{"multiple 0xdeadbeef01 and 0x00c000123456", "multiple  and "},
-		{"", ""},
-	}
-	for _, tt := range tests {
-		if got := stripGoPointers(tt.in); got != tt.want {
-			t.Errorf("stripGoPointers(%q) = %q, want %q", tt.in, got, tt.want)
-		}
-	}
-}
-
 func TestComputeStreak(t *testing.T) {
 	tests := []struct {
 		desc        string
@@ -155,9 +137,12 @@ func TestFilterNightlyRuns(t *testing.T) {
 		{Job: "periodic-prod-e2e-parallel-ocp-nightly"},
 		{Job: "periodic-stage-e2e-parallel"},
 	}
-	got := filterNightlyRuns(runs)
+	got, excluded := filterNightlyRuns(runs)
 	if len(got) != 2 {
 		t.Fatalf("filterNightlyRuns returned %d runs, want 2", len(got))
+	}
+	if excluded != 1 {
+		t.Errorf("filterNightlyRuns excluded %d, want 1", excluded)
 	}
 	for _, r := range got {
 		if r.Job == "periodic-prod-e2e-parallel-ocp-nightly" {
@@ -175,7 +160,7 @@ func TestEv2Hash(t *testing.T) {
 		{"nil annotations", JobRun{}, ""},
 		{"no ev2 key", JobRun{Annotations: map[string]string{"other": "val"}}, ""},
 		{"short hash", JobRun{Annotations: map[string]string{"ev2.rollout/ARO-HCP": "abc123"}}, "abc123"},
-		{"long hash truncated", JobRun{Annotations: map[string]string{"ev2.rollout/ARO-HCP": "abcdef1234567890abcd"}}, "abcdef123456"},
+		{"long hash preserved", JobRun{Annotations: map[string]string{"ev2.rollout/ARO-HCP": "abcdef1234567890abcd"}}, "abcdef1234567890abcd"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.desc, func(t *testing.T) {
@@ -246,95 +231,30 @@ func TestExtractPullNumber(t *testing.T) {
 	}
 }
 
-func TestNeedsErrorEnrichment(t *testing.T) {
-	tests := []struct {
-		desc     string
-		failures []RecentFailure
-		want     bool
-	}{
-		{
-			desc:     "all have outputs",
-			failures: []RecentFailure{{Outputs: []FailureOutput{{Output: "error text"}}}},
-			want:     false,
-		},
-		{
-			desc:     "none have outputs",
-			failures: []RecentFailure{{Outputs: []FailureOutput{{Output: ""}}}},
-			want:     true,
-		},
-		{
-			desc: "mixed — some with, some without",
-			failures: []RecentFailure{
-				{Outputs: []FailureOutput{{Output: "error text"}}},
-				{Outputs: []FailureOutput{{Output: ""}}},
-			},
-			want: true,
-		},
-		{
-			desc:     "empty list",
-			failures: []RecentFailure{},
-			want:     false,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.desc, func(t *testing.T) {
-			if got := needsErrorEnrichment(tt.failures); got != tt.want {
-				t.Errorf("needsErrorEnrichment() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestStripTimestamps(t *testing.T) {
-	tests := []struct {
-		in, want string
-	}{
-		{"no timestamps here", "no timestamps here"},
-		{
-			"time=2026-04-17T23:26:22.973Z level=INFO msg=\"Running step.\"",
-			"time= level=INFO msg=\"Running step.\"",
-		},
-		{
-			"at 2026-04-17T23:26:22Z it broke",
-			"at  it broke",
-		},
-		{
-			"first 2026-04-17T23:26:22.973Z then 2026-04-18T00:04:45.447Z",
-			"first  then ",
-		},
-		{
-			"offset 2026-04-17T23:26:22.973+05:30 timezone",
-			"offset  timezone",
-		},
-		{"", ""},
-		{"2026-04-17 is not a full timestamp", "2026-04-17 is not a full timestamp"},
-	}
-	for _, tt := range tests {
-		if got := stripTimestamps(tt.in); got != tt.want {
-			t.Errorf("stripTimestamps(%q) = %q, want %q", tt.in, got, tt.want)
-		}
-	}
-}
-
-func TestGroupErrorOutputsFull_TimestampNormalization(t *testing.T) {
+func TestGroupErrorOutputsFull_DifferentTimestamps(t *testing.T) {
 	f := RecentFailure{
 		TestName: "deploy-mce",
 		Outputs: []FailureOutput{
 			{RunID: 1, Output: "time=2026-04-17T23:26:22.973Z level=INFO msg=\"deploy-mce\" step=deploy-mce"},
 			{RunID: 2, Output: "time=2026-04-18T00:04:45.447Z level=INFO msg=\"deploy-mce\" step=deploy-mce"},
-			{RunID: 3, Output: "time=2026-04-19T22:18:50.229Z level=INFO msg=\"deploy-mce\" step=deploy-mce"},
+			{RunID: 3, Output: "same error text"},
+			{RunID: 4, Output: "same error text"},
 		},
 	}
 	groups := groupErrorOutputsFull(f)
-	if len(groups) != 1 {
-		t.Errorf("expected 1 error group after timestamp normalization, got %d", len(groups))
-		for i, g := range groups {
-			t.Logf("  group %d (count=%d): %s", i, g.Count, g.Error[:min(100, len(g.Error))])
-		}
-		return
+	// Different timestamps = different groups (simple normalize doesn't strip timestamps).
+	// Identical outputs should still group.
+	if len(groups) < 2 {
+		t.Errorf("expected >=2 groups (timestamps differ), got %d", len(groups))
 	}
-	if groups[0].Count != 3 {
-		t.Errorf("expected count=3, got %d", groups[0].Count)
+	foundGrouped := false
+	for _, g := range groups {
+		if g.Count == 2 {
+			foundGrouped = true
+		}
+	}
+	if !foundGrouped {
+		t.Error("expected identical outputs to be grouped together")
 	}
 }
 
@@ -371,106 +291,40 @@ func TestBuildRegionRatesLowSample(t *testing.T) {
 }
 
 func TestNormalizeForSimilarity(t *testing.T) {
-	tests := []struct {
-		desc string
-		in   string
-		// We check that certain substrings are present/absent after normalization
-		wantContains    []string
-		wantNotContains []string
-	}{
-		{
-			"strips source location",
-			"fail [test.go:112]: some error",
-			[]string{"some error"},
-			[]string{"test.go"},
-		},
-		{
-			"strips timestamps",
-			"time=2026-04-19T17:50:14.082Z level=INFO msg=foo",
-			[]string{"level=info", "msg=foo"},
-			[]string{"2026-04-19"},
-		},
-		{
-			"strips UUIDs",
-			"operation 37230de7-e1d1-4a57-b4b5-81ff612cb3c2 failed",
-			[]string{"operation", "failed"},
-			[]string{"37230de7"},
-		},
-		{
-			"strips Azure URLs",
-			"GET https://management.azure.com/subscriptions/xxx/providers/foo failed",
-			[]string{"get", "failed"},
-			[]string{"management.azure.com"},
-		},
-		{
-			"strips numeric values in quotes",
-			"timeout '45.000000' minutes exceeded",
-			[]string{"timeout", "minutes", "exceeded"},
-			[]string{"45.000000"},
-		},
-		{
-			"lowercases",
-			"CreateHCPClusterFromParam ERROR",
-			[]string{"createhcpclusterfromparam", "error"},
-			nil,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.desc, func(t *testing.T) {
-			got := normalizeForSimilarity(tt.in)
-			for _, want := range tt.wantContains {
-				if !strings.Contains(got, want) {
-					t.Errorf("normalizeForSimilarity() = %q, want to contain %q", got, want)
-				}
-			}
-			for _, notWant := range tt.wantNotContains {
-				if strings.Contains(got, notWant) {
-					t.Errorf("normalizeForSimilarity() = %q, should NOT contain %q", got, notWant)
-				}
-			}
-		})
+	got := normalizeForSimilarity("  CreateHCPCluster   ERROR  ")
+	if got != "createhcpcluster error" {
+		t.Errorf("normalizeForSimilarity() = %q, want lowercased + whitespace collapsed", got)
 	}
 }
 
-func TestNormalizedErrorInFailureJSON(t *testing.T) {
+func TestInnermostCauseInFailureJSON(t *testing.T) {
 	f := RecentFailure{
 		TestName:     "TestA",
-		FailureCount: 3,
+		FailureCount: 2,
 		FirstFailure: "2026-04-20T00:00:00Z",
 		LastFailure:  "2026-04-22T00:00:00Z",
 		Outputs: []FailureOutput{
-			{RunID: 1, Output: "fail [idms.go:112]: Unexpected error: timeout '45.000000' minutes exceeded during CreateHCPClusterFromParam for cluster foo in resource group rg-foo, error: context deadline exceeded"},
-			{RunID: 2, Output: "fail [idms.go:112]: Unexpected error: timeout '45.000000' minutes exceeded during CreateHCPClusterFromParam for cluster bar in resource group rg-bar, error: context deadline exceeded"},
-			{RunID: 3, Output: "fail [idms.go:112]: tls: x509: certificate is valid for api.x, not api.y"},
+			{RunID: 1, Output: "fail [idms.go:112]: Unexpected error: timeout '45.000000' minutes exceeded, caused by: context deadline exceeded"},
+			{RunID: 2, Output: "fail [idms.go:112]: Unexpected error: timeout '45.000000' minutes exceeded, caused by: context deadline exceeded"},
 		},
 	}
-	ranked := []rankedFailure{{failure: f, regularHits: 3, bestRunID: 1}}
+	ranked := []rankedFailure{{failure: f, regularHits: 2, bestRunID: 1}}
 	runMap := map[int64]JobRun{
 		1: {ID: 1, Timestamp: 1000},
 		2: {ID: 2, Timestamp: 2000},
-		3: {ID: 3, Timestamp: 3000},
 	}
 	windowStart := time.UnixMilli(500).UTC()
-	result := buildFailuresJSON(ranked, runMap, 3, nil, "", windowStart)
+	result := buildFailuresJSON(ranked, runMap, 2, windowStart)
 
 	if len(result) != 1 {
 		t.Fatalf("expected 1 failure, got %d", len(result))
 	}
-	ne := result[0].NormalizedError
-	if ne == "" {
-		t.Fatal("NormalizedError should not be empty")
+	ic := result[0].InnermostCause
+	if ic == "" {
+		t.Fatal("InnermostCause should not be empty for cause chain errors")
 	}
-	if strings.Contains(ne, "idms.go") {
-		t.Error("NormalizedError should not contain source file")
-	}
-	if strings.Contains(ne, "45.000000") {
-		t.Error("NormalizedError should not contain raw numeric values")
-	}
-	if !strings.Contains(ne, "timeout") {
-		t.Error("NormalizedError should contain 'timeout'")
-	}
-	if !strings.Contains(ne, "createhcpclusterfromparam") {
-		t.Error("NormalizedError should contain lowercased function name")
+	if !strings.Contains(ic, "context deadline exceeded") {
+		t.Errorf("InnermostCause should contain deepest cause, got %q", ic)
 	}
 }
 
@@ -556,12 +410,15 @@ func TestExtractPipelineStepErrors(t *testing.T) {
 
 	extractPipelineStepErrors(failures)
 
-	// Pipeline step with ERROR entry: should be extracted
-	if !strings.Contains(failures[0].Outputs[0].Output, "RoleAssignmentLimitExceeded") {
-		t.Errorf("expected extracted error, got %q", failures[0].Outputs[0].Output)
+	// Pipeline step with ERROR entry: original preserved, extracted errors populated
+	if !strings.Contains(failures[0].Outputs[0].Output, "Running step") {
+		t.Error("original output should be preserved with INFO entries")
 	}
-	if strings.Contains(failures[0].Outputs[0].Output, "Running step") {
-		t.Error("extracted output should not contain INFO entries")
+	if !strings.Contains(failures[0].Outputs[0].ExtractedErrors, "RoleAssignmentLimitExceeded") {
+		t.Errorf("expected extracted errors to contain error, got %q", failures[0].Outputs[0].ExtractedErrors)
+	}
+	if strings.Contains(failures[0].Outputs[0].ExtractedErrors, "Running step") {
+		t.Error("extracted errors should not contain INFO entries")
 	}
 
 	// Empty output should stay empty
@@ -574,9 +431,12 @@ func TestExtractPipelineStepErrors(t *testing.T) {
 		t.Errorf("non-pipeline test should be untouched, got %q", failures[1].Outputs[0].Output)
 	}
 
-	// Pipeline step with no ERROR entries: should keep original
+	// Pipeline step with no ERROR entries: no extracted errors
+	if failures[2].Outputs[0].ExtractedErrors != "" {
+		t.Errorf("pipeline step with no ERROR should have empty extracted errors, got %q", failures[2].Outputs[0].ExtractedErrors)
+	}
 	if !strings.Contains(failures[2].Outputs[0].Output, "Running step") {
-		t.Errorf("pipeline step with no ERROR should keep original, got %q", failures[2].Outputs[0].Output)
+		t.Errorf("pipeline step with no ERROR should keep original output, got %q", failures[2].Outputs[0].Output)
 	}
 }
 

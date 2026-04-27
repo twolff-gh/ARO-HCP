@@ -10,10 +10,6 @@ import (
 )
 
 const (
-	budgetSmallFailureCount  = 5  // per-test artifact fetching for <=N failures
-	budgetMediumFailureCount = 20 // representative-only fetching for <=N failures
-	budgetSmallTailLines     = 20 // output tail lines when few failures
-	budgetMediumTailLines    = 10 // output tail lines when moderate failures
 )
 
 // TriageResult is the top-level output of end-to-end single-run structural extraction.
@@ -38,8 +34,6 @@ type TriageResult struct {
 	Provision   *ProvisionSummary  `json:"provision,omitempty"`
 	Alerts      []AlertSummary     `json:"alerts,omitempty"`
 	Azure       []AzureTestSummary `json:"azure,omitempty"`
-	Timing      []TimingSlowest    `json:"timing,omitempty"`
-	Coverage    *TriageCoverage     `json:"coverage,omitempty"`
 }
 
 // RunContext identifies the environment, deploy version, and PR for a run.
@@ -49,7 +43,6 @@ type RunContext struct {
 	EV2Hash        string `json:"ev2_hash,omitempty"`
 	Region         string `json:"region,omitempty"`
 	PullNumber     int    `json:"pull_number,omitempty"`
-	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
 }
 
 // NeighborContext summarizes pass/fail rates of nearby runs for cross-run correlation.
@@ -103,7 +96,6 @@ func runTriage(args []string) error {
 
 	// 1. METADATA
 	result.Context = buildRunContext(s)
-	result.Context.TimeoutSeconds = extractTimeout(dig)
 
 	// 2. STEP STRUCTURE
 	if data, err := dig.store.artifact(dig.base, "artifacts/ci-operator-step-graph.json"); err == nil {
@@ -132,8 +124,7 @@ func runTriage(args []string) error {
 				failedCount++
 			}
 		}
-		outputTailLines := outputTailBudget(failedCount)
-		groups, scale := classifyErrors(tests, outputTailLines)
+		groups, scale := classifyErrors(tests, 10)
 		result.Errors = groups
 		result.Scale = scale
 	} else {
@@ -146,15 +137,15 @@ func runTriage(args []string) error {
 				if tc.err != "" {
 					raw := tc.err
 					cleaned := stripGoPointers(raw)
+					cause, causeTrunc := extractInnermostCause(raw)
 					fallbackErrors = append(fallbackErrors, ErrorGroup{
-						Signature:      normalizeForSimilarity(raw),
-						Error:          truncateLine(cleaned, maxErrorDisplayLen),
-						TestCount:      1,
-						Tests:          []string{tc.name},
-						SourceFile:     extractSourceFile(raw),
-						InnermostCause: extractInnermostCause(raw),
-						IsShortError:   isDiagnosticallyEmpty(cleaned),
-						IsCrashDump:    len(raw) > crashDumpMinLen && (len(raw)-len(cleaned))*crashDumpPointerRatio > len(raw),
+						Signature:              normalizeForSimilarity(raw),
+						Error:                  cleaned,
+						TestCount:              1,
+						Tests:                  []string{tc.name},
+						SourceFile:             extractSourceFile(raw),
+						InnermostCause:         cause,
+						InnermostCauseTruncated: causeTrunc,
 					})
 				}
 			}
@@ -216,48 +207,18 @@ func runTriage(args []string) error {
 		}
 	}
 
-	// 13. AZURE ERRORS (per failing test, budget-aware)
-	azureTests := perTestBudget(result)
-	azureFetched := false
-	for _, testName := range azureTests {
-		azurePath := fmt.Sprintf("artifacts/%s/%s/artifacts/%s/azure.log",
-			dig.step, dig.container, sanitizeTest(testName))
-		if data, err := dig.store.artifact(dig.base, azurePath); err == nil {
-			azureFetched = true
-			if summary := extractAzureSummary(data, testName); summary != nil && len(summary.ResponseErrors) > 0 {
-				result.Azure = append(result.Azure, *summary)
-			}
-		}
-	}
-
-	// 14. TIMING (per failing test, budget-aware)
-	timingFetched := false
-	if len(azureTests) > 0 {
-		vizDir := fmt.Sprintf("artifacts/%s/%s/artifacts/gather-test-visualization/artifacts/test-timing/", dig.step, dig.container)
-		if _, files, err := dig.store.listDir(dig.base + vizDir); err == nil {
-			for _, f := range files {
-				if !strings.Contains(f, "timing-metadata-") {
-					continue
-				}
-				data, err := dig.store.fetch(gcsDownload + f)
-				if err != nil {
-					continue
-				}
-				timingFetched = true
-				if ts := extractTimingSlowest(data); ts != nil {
-					for _, target := range azureTests {
-						if strings.Contains(ts.TestName, target) || strings.Contains(target, ts.TestName) {
-							result.Timing = append(result.Timing, *ts)
-							break
-						}
-					}
+	// 13. AZURE ERRORS (per failing test)
+	for _, eg := range result.Errors {
+		for _, testName := range eg.Tests {
+			azurePath := fmt.Sprintf("artifacts/%s/%s/artifacts/%s/azure.log",
+				dig.step, dig.container, sanitizeTest(testName))
+			if data, err := dig.store.artifact(dig.base, azurePath); err == nil {
+				if summary := extractAzureSummary(data, testName); summary != nil && len(summary.ResponseErrors) > 0 {
+					result.Azure = append(result.Azure, *summary)
 				}
 			}
 		}
 	}
-
-	// 15. COVERAGE
-	result.Coverage = buildCoverage(result, azureFetched, timingFetched)
 
 	return json.NewEncoder(os.Stdout).Encode(result)
 }
@@ -281,28 +242,6 @@ func buildRunContext(s *RunSummary) RunContext {
 		}
 	}
 	return ctx
-}
-
-func extractTimeout(dig *digContext) int {
-	data, err := dig.store.artifact(dig.base, "prowjob.json")
-	if err != nil {
-		return 0
-	}
-	var pj struct {
-		Spec struct {
-			DecorationConfig struct {
-				Timeout string `json:"timeout"`
-			} `json:"decoration_config"`
-		} `json:"spec"`
-	}
-	if json.Unmarshal(data, &pj) != nil {
-		return 0
-	}
-	d, err := time.ParseDuration(pj.Spec.DecorationConfig.Timeout)
-	if err != nil {
-		return 0
-	}
-	return int(d.Seconds())
 }
 
 type junitTriageEntry struct {
@@ -437,104 +376,3 @@ func (r *TriageResult) failingTestNames() []string {
 
 // outputTailBudget returns how many output tail lines to include per test,
 // scaling down as failure count grows to control output size.
-func outputTailBudget(failedCount int) int {
-	switch {
-	case failedCount <= budgetSmallFailureCount:
-		return budgetSmallTailLines
-	case failedCount <= budgetMediumFailureCount:
-		return budgetMediumTailLines
-	default:
-		return 0
-	}
-}
-
-// perTestBudget selects which failing tests get per-test artifact fetching.
-// Few failures: fetch all. Moderate: one representative per error group. Many: skip.
-func perTestBudget(result *TriageResult) []string {
-	names := result.failingTestNames()
-	switch {
-	case len(names) <= budgetSmallFailureCount:
-		return names
-	case len(names) <= budgetMediumFailureCount:
-		seen := map[string]bool{}
-		var reps []string
-		for _, eg := range result.Errors {
-			if len(eg.Tests) > 0 && !seen[eg.Tests[0]] {
-				seen[eg.Tests[0]] = true
-				reps = append(reps, eg.Tests[0])
-			}
-		}
-		return reps
-	default:
-		return nil
-	}
-}
-
-// TriageCoverage tracks which artifact types were available and notable signals found.
-type TriageCoverage struct {
-	HasTestResults bool `json:"has_test_results"`
-	HasStepGraph   bool `json:"has_step_graph"`
-	HasMetrics     bool `json:"has_metrics"`
-	HasBuildLog    bool `json:"has_build_log"`
-	HasPodinfo     bool `json:"has_podinfo"`
-	HasEvents      bool `json:"has_events"`
-	HasPoolState   bool `json:"has_pool_state"`
-	HasProvision   bool `json:"has_provision,omitempty"`
-	HasAlerts      bool `json:"has_alerts,omitempty"`
-	HasAzureLogs   bool `json:"has_azure_logs,omitempty"`
-	HasTimingData  bool `json:"has_timing_data,omitempty"`
-	HasLinks       bool `json:"has_links,omitempty"`
-	HasNeighbors   bool `json:"has_neighbors,omitempty"`
-
-	OOMDetected     bool     `json:"oom_detected"`
-	CiJobFailed     bool     `json:"ci_job_failed"`
-	PoolContention  bool     `json:"pool_contention"`
-	AzureErrorCount int      `json:"azure_error_count"`
-	MaxLeaseAcqSec  *float64 `json:"max_lease_acquisition_seconds,omitempty"`
-	ShortErrorTests int      `json:"short_error_tests"`
-	CrashDumpTests  int      `json:"crash_dump_tests"`
-}
-
-func buildCoverage(result *TriageResult, azureFetched, timingFetched bool) *TriageCoverage {
-	c := &TriageCoverage{
-		HasTestResults: result.Scale.HasTestResults,
-		HasStepGraph:   len(result.Steps) > 0,
-		HasMetrics:     result.Metrics != nil,
-		HasBuildLog:    result.BuildLog != nil,
-		HasPodinfo:     result.Podinfo != nil,
-		HasEvents:      result.Events != nil,
-		HasPoolState:   result.Pool != nil,
-		HasProvision:   result.Provision != nil,
-		HasAlerts:      len(result.Alerts) > 0,
-		HasAzureLogs:   azureFetched,
-		HasTimingData:  timingFetched,
-		HasLinks:       len(result.Links) > 0,
-		HasNeighbors:   result.Neighbors != nil,
-	}
-	if result.Podinfo != nil {
-		c.OOMDetected = result.Podinfo.OOMDetected
-	}
-	if result.Events != nil {
-		c.CiJobFailed = result.Events.CiJobFailed
-	}
-	if result.Pool != nil {
-		c.PoolContention = len(result.Pool.Contention) > 0
-	}
-	for _, a := range result.Azure {
-		for _, count := range a.ResponseErrors {
-			c.AzureErrorCount += count
-		}
-	}
-	if result.Metrics != nil {
-		c.MaxLeaseAcqSec = &result.Metrics.MaxLeaseAcqSec
-	}
-	for _, eg := range result.Errors {
-		if eg.IsShortError {
-			c.ShortErrorTests += eg.TestCount
-		}
-		if eg.IsCrashDump {
-			c.CrashDumpTests += eg.TestCount
-		}
-	}
-	return c
-}
