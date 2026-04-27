@@ -7,7 +7,7 @@ description: "CI fleet assessment — wide-first signal discovery and correlatio
 
 Discover, correlate, and prioritize CI failure signals across environments. You are the wide net — you find what's worth investigating and produce a fleet assessment.
 
-You do NOT inspect per-run artifacts. That's `/cidig`. Your tools are `survey` and `search`.
+You do NOT inspect per-run artifacts. That's `/cidig`. Your tool is `survey`.
 
 ## Arguments
 
@@ -77,6 +77,7 @@ Read the `error_groups` across all `failures` and cluster them yourself by error
 
 Guidelines for clustering:
 - Read the **full** error text in `error_groups`, not just the prefix. Errors that start with the same phrase (e.g., "failed to create HCP cluster") can have completely different root causes deeper in the message (e.g., timeout vs TLS cert mismatch vs quota exhaustion). Always read to the end.
+- **Pipeline step errors deserve extra attention.** Tests named `Run pipeline step ...` contain templatize structured log output. The actual diagnostic is usually buried inside the `err="..."` field — often an ARM JSON response body with `ERROR CODE`, `"message"`, and `"details"` fields. Read the entire error text, not just the step name and wrapper message. The root cause (e.g., `Resource 'applications' for API version 'beta' is not supported`) may be hundreds of characters deep. Quote the specific diagnostic in your finding, not the wrapper.
 - When a test appears in `cross_env_failures`, compare the full `error_groups` text **per environment** before assuming they share a root cause. The same test name in INT and PROD can fail for entirely different reasons — only the error text reveals this.
 - Errors at different source files but with the same operational failure (e.g., all timing out on cluster creation) are one problem.
 - Errors that look similar but name different operations (e.g., cluster creation timeout vs credential access timeout) are distinct problems.
@@ -102,7 +103,7 @@ For each distinct problem, check these dimensions:
 - **Region** — check `region_rates`. Dramatically lower pass rate in one region = region-scoped.
 - **Duration** — ~2700s = timeout ceiling. ~600s = fast failure. Consistent = deterministic. High variance = intermittent.
 - **Temporal** — multiple distinct problems sharing onset within 8 hours = shared trigger.
-- **Upstream bug check** — only when a finding looks like an OCP or platform bug (TLS/certificate errors, DNS issues, API server failures — not ARO-specific errors like cluster creation timeouts). Run `search "exact error message" --age=168h` and check the `issues` array for existing OCPBUGS tickets. Skip this for errors that are clearly ARO-specific (timeouts on CreateHCPCluster, pipeline step failures, test-specific assertions).
+- **Upstream bug check** — only when a finding looks like an OCP or platform bug (TLS/certificate errors, DNS issues, API server failures — not ARO-specific errors). Check Sippy search directly at `https://sippy.dptools.openshift.org/api/tests?search=ERROR_TEXT&release=aro-integration` for existing OCPBUGS tickets.
 
 ### Step 5: Assess presubmit platform (presubmit and all scopes only)
 
@@ -110,7 +111,7 @@ Skip this step for periodic scope.
 
 From the dev survey:
 - **PR concentration** — check `pull_number` on failing runs. If most failures come from 1-2 PRs, the fleet is healthy and those PRs are broken. If failures are spread across many PRs, it's an infrastructure or shared-code issue. Report the distinction — it changes the triage decision.
-- **Pipeline step failures** (`Run pipeline step ...`) and **build failures** (`Build image ...`) block all PR testing — highest-urgency presubmit issues.
+- **Pipeline step failures** (`Run pipeline step ...`) and **build failures** (`Build image ...`) block all PR testing — highest-urgency presubmit issues. For pipeline steps, read the full `error_groups` text to extract the actual ARM error code and detail message — report that, not just "ARM step failure."
 - **Test failures** — cross-reference against periodic findings. Same test + same full error text = shared root cause.
 
 **PR deduplication (important):** A heavily-retested PR (e.g., 17 runs) inflates hit counts and distorts pass rates. When computing presubmit statistics:
@@ -139,8 +140,7 @@ For the **top 2-3 findings**, launch `/cidig` investigations in parallel as back
 | `survey --env=int --job=nightly --days=N` | 1 |
 | `survey --env=prod --job=nightly --days=N` | 1 |
 | `survey --env=ENV --days=30` | 3 (one per env with failures) |
-| `search "pattern"` | 2 (upstream bug check only) |
-| **Total** | **8** |
+| **Total** | **6** |
 
 **presubmit scope:**
 
@@ -148,10 +148,9 @@ For the **top 2-3 findings**, launch `/cidig` investigations in parallel as back
 |---------|-----------|
 | `survey --env=dev --days=N` | 1 |
 | `survey --env=dev --job=stage` | 1 (only if user requests shared-env presubmit) |
-| `search "pattern"` | 2 (upstream bug check only) |
-| **Total** | **4** |
+| **Total** | **2** |
 
-**all scope:** Both budgets apply (total 12).
+**all scope:** Both budgets apply (total 8).
 
 ## Data Reference
 
@@ -165,27 +164,20 @@ Per-environment data:
 - **ev2_hash_rates**: `[{hash, pass, fail, total, pass_rate, is_cron}]` — per-EV2-hash pass/fail rates. `is_cron: true` for NO_HASH (cron-triggered) runs. Use to identify bad deploys (hash with 0% pass rate) and chronic cron failures. Sorted by total runs descending.
 - **failure_scale_dist**: `{none, isolated, moderate, cascade}` — count of runs by failure scale bucket: none=0 failures, isolated=1-3, moderate=4-15, cascade=16+. Tells you the shape of failures — mostly isolated regressions vs systemic cascades.
 - **region_rates**: `[{region, pass, total, pass_rate, low_sample}]` — only for envs with EV2 region annotations. `low_sample: true` when total < 3 runs — treat pass rates as anecdotal, not statistically meaningful.
-- **runs**: `[{id, timestamp, overall_result, real_failures, failed_tests[], ev2_hash, region, pull_number, url}]`
-  - `pull_number`: PR number extracted from the Prow URL (presubmit only; 0 for batch merges and periodic runs). Use to distinguish "one bad PR" from fleet-wide issues.
-- **failures**: `[{test_name, failure_count, regular_hits, first/last_failure, last_pass, regions, at_window_boundary, error_groups[{error, count}], normalized_error, daily_hits[{date, count}], durations[] (top 10 only, last 7 values in seconds), best_run_id, best_run_url, total_runs}]`
+- **runs**: `[{id, timestamp, overall_result, real_failures, failed_tests[] (max 5), failed_tests_truncated, ev2_hash, region, pull_number, url}]`
+  - `failed_tests`: capped at 5 per run. Use `real_failures` for the actual count. Full test lists are in the `failures` array.
+  - `pull_number`: PR number extracted from the Prow URL (presubmit only; 0 for periodic). Use to distinguish "one bad PR" from fleet-wide issues.
+- **failures**: `[{test_name, failure_count, regular_hits, first/last_failure, last_pass, regions, at_window_boundary, error_groups[{error, count}], innermost_cause, daily_hits[{date, count}], best_run_id, best_run_url, total_runs}]`
   - `at_window_boundary`: true when `first_failure` is within 24h of the survey window start — the failure likely predates the window (chronic)
   - `chronicity`: `"at_boundary"` (predates window, chronic), `"within_window"` (appeared during window, regression candidate), or `"intermittent"` (last_pass is after last_failure, flaky). More precise than `at_window_boundary` alone.
-  - `normalized_error`: the dominant error text with instance-specific noise stripped (source locations, timestamps, UUIDs, Azure URLs, numeric values, hex addresses, lowercased). Use this to cluster tests by error similarity — tests with similar `normalized_error` values share the same failure mechanism.
+  - `innermost_cause`: the deepest segment after "caused by:" or ", error:" chains. Empty for errors without Go-style cause chains (ARM errors, alerts, build failures). When empty, read the full `error_groups[].error` text directly — the raw error text is preserved without stripping or truncation.
 - **co_failure_groups**: `[{leader, members[{test, total_failures, co_failures, solo_failures}], min_overlap_pct, distinct_runs, common_run_ids[], common_ev2_hashes[], common_regions[], onset}]`
   - `distinct_runs`: total number of runs where 2+ members co-failed (before `common_run_ids` is capped at 10). Low count with many members = concentrated in a few bad runs.
-- **co_failure_stats**: `{threshold, adapted_threshold, blast_radius, blast_excluded, eligible_tests, pairs_checked, pairs_above_threshold, max_overlap_pct, reason}`
-  - `adapted_threshold`: when eligible tests have ≤5 runs each, threshold is automatically lowered to 0.5 to compensate for sparse data. This field is only present when adaptation occurred.
+- **co_failure_stats**: `{threshold, adapted_threshold, total_failing_tests, eligible_tests, pairs_checked, pairs_above_threshold, max_overlap_pct, reason}`
+  - `total_failing_tests`: distinct tests in the run data (before the 2+ runs filter). Compare against `eligible_tests` to see dropout.
+  - `adapted_threshold`: when eligible tests have ≤5 runs each, threshold is automatically lowered to 0.5. Only present when adaptation occurred.
 - **cross_env_failures** (top-level in `--env=all`): `[{test_name, env_count, environments[{env, hits, run_id}]}]` — error details are in the per-env `failures` array, look up by test name
 
-- **pr_stats** (presubmit only, omitted for periodic): `{distinct_prs, pr_weighted_pass_rate, run_weighted_note, prs[]}`
-  - `pr_weighted_pass_rate`: average of each PR's individual pass rate — not skewed by heavily-retested PRs. Compare against `status.pass_rate` (run-weighted) to detect skew.
-  - `run_weighted_note`: present when an outlier PR (>5 runs) significantly skews the run-weighted pass rate. Explains the discrepancy.
-  - `prs[]`: `{number, runs, passed, failed, pass_rate, failed_tests[], outlier, url}` — sorted by failure count descending. `failed_tests` lists distinct test names that failed for this PR (use to map PRs to findings). `outlier: true` when runs > 5.
-  - Use `pr_stats` for the **Affected PRs** section of each presubmit finding: cross-reference each finding's test names against `prs[].failed_tests` to build the per-finding PR table.
-
-### `search  "pattern" --age=168h --env=ENV`
-
-Returns: `{pattern, search_url, total_tests, aro_count, other_count, truncated, groups[{file, names[], context[], urls[], count}], issues[{name, url}]}`
 
 ## Domain Knowledge
 
@@ -275,7 +267,6 @@ All sections render automatically from the DATA object. The template handles fil
 | Situation | Action |
 |---|---|
 | Sippy API down | Note "unavailable." Report what you have. |
-| Search timeout or `truncated` | Retry with shorter `--age` or more specific pattern. Note if still fails. |
 | `data_window.truncated: true` | State the actual window. Do not present as a full baseline. |
 | No failures in survey | Fleet healthy. Report and stop. |
 | EV2 coverage < 50% | Note in report — deploy correlation unreliable for that env. |
