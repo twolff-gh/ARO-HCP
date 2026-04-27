@@ -21,8 +21,6 @@ No external dependencies. Pure Go standard library.
 | `survey --env=all --days=7` | Fleet health, failures, root causes, co-failure groups, region rates | Sippy + GCS |
 | `triage <run-id>` | Unified signal packet — all artifacts compressed into one JSON object | GCS + Sippy |
 | `dig <run-id> <what>` | Per-run artifact drill-down (tests, azure, metrics, provision, etc.) | GCS |
-| `search "pattern"` | Cross-run error pattern matching with ARO vs fleet-wide split | CI Search |
-| `diff --run=<run-id>` | Deploy version diff (commits, changed files) | GitHub |
 
 All output is JSON.
 
@@ -60,5 +58,3 @@ Budget-aware per-test extraction: azure, timing, and output_tails are included f
 
 - **Sippy** — Run listings, test failure rates, durations, pass rates
 - **GCS** — Per-run artifacts (junit, Azure logs, K8s events, metrics, pool state, pod info, timing metadata)
-- **CI Search** — Cross-run pattern matching across the OpenShift CI fleet
-- **GitHub** — Commit diffs between deployed versions
