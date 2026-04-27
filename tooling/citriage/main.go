@@ -38,13 +38,12 @@ Commands:
     --days=7                           lookback period
     --job=PATTERN                      override job filter
     --test=PATTERN                     filter tests by name
-    --cofailure=0.8                    co-failure overlap threshold (0=disable)
-
-  dig <run-id> <what>                Fetch artifacts from a specific run
-    tests, classify, steptime, provision, alerts, events,
-    pool, podinfo, metrics, extract, links, azure <test>
 
   triage <run-id> [flags]            Single-run structural extraction
     --context-days=3                   neighbor runs for flake detection
+
+  dig <run-id> <what>                Fetch single artifact from a run
+    tests, steptime, provision, alerts, events,
+    pool, podinfo, metrics, links, azure <test>
 `)
 }

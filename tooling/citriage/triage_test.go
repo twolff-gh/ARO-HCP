@@ -6,10 +6,10 @@ import (
 
 func TestBuildRunContext(t *testing.T) {
 	cases := []struct {
-		name        string
-		summary     RunSummary
-		wantEnv     string
-		wantPresub  bool
+		name       string
+		summary    RunSummary
+		wantEnv    string
+		wantPresub bool
 	}{
 		{
 			name:       "integration periodic",
@@ -49,15 +49,37 @@ func TestBuildRunContext(t *testing.T) {
 	}
 }
 
-func TestFailingTestNames(t *testing.T) {
-	result := &TriageResult{
-		Errors: []ErrorGroup{
-			{Tests: []string{"testA", "testB"}},
-			{Tests: []string{"testB", "testC"}},
-		},
+func TestParseJUnitForTriage(t *testing.T) {
+	input := []byte(`<testsuites>
+		<testsuite name="e2e" tests="4" failures="2">
+			<testcase name="test-create-cluster" time="600.0">
+				<failure message="timeout exceeded">details here</failure>
+			</testcase>
+			<testcase name="test-list-clusters" time="5.0"></testcase>
+			<testcase name="test-delete-cluster" time="120.0">
+				<error message="resource not found">stack trace</error>
+			</testcase>
+			<testcase name="test-get-cluster" time="2.0">
+				<skipped/>
+			</testcase>
+		</testsuite>
+	</testsuites>`)
+
+	entries := parseJUnitForTriage(input)
+	if len(entries) != 2 {
+		t.Fatalf("entry count = %d, want 2 (failures only)", len(entries))
 	}
-	names := result.failingTestNames()
-	if len(names) != 3 {
-		t.Errorf("expected 3 unique names, got %d: %v", len(names), names)
+
+	if entries[0].name != "test-create-cluster" || entries[0].err != "timeout exceeded" {
+		t.Errorf("entry 0: name=%q err=%q", entries[0].name, entries[0].err)
+	}
+	if entries[1].name != "test-delete-cluster" || entries[1].err != "resource not found" {
+		t.Errorf("entry 1: name=%q err=%q", entries[1].name, entries[1].err)
+	}
+}
+
+func TestParseJUnitForTriage_Invalid(t *testing.T) {
+	if entries := parseJUnitForTriage([]byte("not xml")); entries != nil {
+		t.Errorf("expected nil for invalid XML, got %d entries", len(entries))
 	}
 }

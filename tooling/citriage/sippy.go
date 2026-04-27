@@ -85,6 +85,7 @@ type JobRun struct {
 	Cluster         string            `json:"cluster"`
 	URL             string            `json:"url"`
 	InfraFailure    bool              `json:"infrastructure_failure"`
+	PullRequestSHA  string            `json:"pull_request_sha"`
 }
 
 // FailureOutput pairs a run ID with the test's error output for that run.
@@ -140,17 +141,6 @@ func (s *sippy) recentFailures(release, period string) ([]RecentFailure, error) 
 	}
 	var resp struct{ Rows []RecentFailure `json:"rows"` }
 	return resp.Rows, json.Unmarshal(data, &resp)
-}
-
-func (s *sippy) durations(release, test string) (map[string]float64, error) {
-	data, err := s.get("/api/tests/durations", url.Values{
-		"release": {release}, "test": {test},
-	})
-	if err != nil {
-		return nil, err
-	}
-	var d map[string]float64
-	return d, json.Unmarshal(data, &d)
 }
 
 func extractPullNumber(prowURL string) int {

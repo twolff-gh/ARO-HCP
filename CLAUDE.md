@@ -111,7 +111,7 @@ Custom tools in `tooling/`:
 - `templatize` - Pipeline template processing
 - `secret-sync` - Secret management utilities
 - `prometheus-rules` - Monitoring rule generation
-- `citriage` — CI fleet triage tool. 3 commands: `survey` (fleet health, co-failure detection, EV2 hash rates, chronicity, region breakdown), `triage RUN` (end-to-end single-run structural extraction with cascade detection, error deduplication, and cross-run correlation), `dig RUN WHAT` (single-run artifacts: `tests`, `output`, `azure`, `metrics`, `podinfo`, `events`, `provision`, `alerts`, `pool`, `classify`, `steptime`, `extract`, `links`). Powers the `/cidig` and `/ciscan` skills. `/ciscan` takes a scope argument: `periodic` (production health), `presubmit` (PR velocity), or `all`. Zero external deps. Build: `go build -o /tmp/citriage ./tooling/citriage/`. All output is JSON.
+- `citriage` — CI fleet triage tool. 3 commands: `survey` (fleet health — failed runs only, top-20 error outputs, EV2/region/daily rates), `triage RUN` (single-run structural extraction — test failures, step timings, all infra signals, cross-run correlation), `dig RUN WHAT` (artifact drill-down: `tests`, `azure`, `metrics`, `podinfo`, `events`, `provision`, `alerts`, `pool`, `steptime`, `links`). Code does structural extraction; LLM does analysis. Powers `/cidig` and `/ciscan` skills. Zero external deps. Build: `go build -o /tmp/citriage ./tooling/citriage/`. All output is JSON.
 
 ## Documentation
 

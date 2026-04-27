@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -231,33 +233,6 @@ func TestExtractPullNumber(t *testing.T) {
 	}
 }
 
-func TestGroupErrorOutputsFull_DifferentTimestamps(t *testing.T) {
-	f := RecentFailure{
-		TestName: "deploy-mce",
-		Outputs: []FailureOutput{
-			{RunID: 1, Output: "time=2026-04-17T23:26:22.973Z level=INFO msg=\"deploy-mce\" step=deploy-mce"},
-			{RunID: 2, Output: "time=2026-04-18T00:04:45.447Z level=INFO msg=\"deploy-mce\" step=deploy-mce"},
-			{RunID: 3, Output: "same error text"},
-			{RunID: 4, Output: "same error text"},
-		},
-	}
-	groups := groupErrorOutputsFull(f)
-	// Different timestamps = different groups (simple normalize doesn't strip timestamps).
-	// Identical outputs should still group.
-	if len(groups) < 2 {
-		t.Errorf("expected >=2 groups (timestamps differ), got %d", len(groups))
-	}
-	foundGrouped := false
-	for _, g := range groups {
-		if g.Count == 2 {
-			foundGrouped = true
-		}
-	}
-	if !foundGrouped {
-		t.Error("expected identical outputs to be grouped together")
-	}
-}
-
 func TestBuildRegionRatesNoRegions(t *testing.T) {
 	runs := []JobRun{
 		{TestFailures: 0},
@@ -290,41 +265,82 @@ func TestBuildRegionRatesLowSample(t *testing.T) {
 	}
 }
 
-func TestNormalizeForSimilarity(t *testing.T) {
-	got := normalizeForSimilarity("  CreateHCPCluster   ERROR  ")
-	if got != "createhcpcluster error" {
-		t.Errorf("normalizeForSimilarity() = %q, want lowercased + whitespace collapsed", got)
+func TestBuildFailuresJSON(t *testing.T) {
+	failures := []RecentFailure{
+		{
+			TestName:     "TestA",
+			FailureCount: 2,
+			FirstFailure: "2026-04-20T00:00:00Z",
+			LastFailure:  "2026-04-22T00:00:00Z",
+			Outputs: []FailureOutput{
+				{RunID: 1, Output: "timeout exceeded"},
+				{RunID: 2, Output: "timeout exceeded"},
+			},
+		},
+		{
+			TestName:     "[sig-sippy] synthetic",
+			FailureCount: 1,
+			Outputs:      []FailureOutput{{RunID: 3}},
+		},
+	}
+	runs := []JobRun{
+		{ID: 1, URL: "https://prow.example.com/1"},
+		{ID: 2, URL: "https://prow.example.com/2"},
+	}
+	result := buildFailuresJSON(failures, runs)
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 failure (synthetic filtered), got %d", len(result))
+	}
+	if result[0].BestRunID != 1 {
+		t.Errorf("BestRunID = %d, want 1", result[0].BestRunID)
+	}
+	if result[0].BestRunURL != "https://prow.example.com/1" {
+		t.Errorf("BestRunURL = %q, want prow URL", result[0].BestRunURL)
+	}
+	if len(result[0].Outputs) != 2 {
+		t.Errorf("expected 2 outputs, got %d", len(result[0].Outputs))
 	}
 }
 
-func TestInnermostCauseInFailureJSON(t *testing.T) {
-	f := RecentFailure{
-		TestName:     "TestA",
-		FailureCount: 2,
-		FirstFailure: "2026-04-20T00:00:00Z",
-		LastFailure:  "2026-04-22T00:00:00Z",
-		Outputs: []FailureOutput{
-			{RunID: 1, Output: "fail [idms.go:112]: Unexpected error: timeout '45.000000' minutes exceeded, caused by: context deadline exceeded"},
-			{RunID: 2, Output: "fail [idms.go:112]: Unexpected error: timeout '45.000000' minutes exceeded, caused by: context deadline exceeded"},
-		},
+func TestBuildFailuresJSON_OutputCapping(t *testing.T) {
+	var failures []RecentFailure
+	for i := 0; i < 25; i++ {
+		failures = append(failures, RecentFailure{
+			TestName:     fmt.Sprintf("test-%d", i),
+			FailureCount: 25 - i,
+			Outputs:      []FailureOutput{{RunID: int64(i + 1), Output: "some error"}},
+		})
 	}
-	ranked := []rankedFailure{{failure: f, regularHits: 2, bestRunID: 1}}
-	runMap := map[int64]JobRun{
-		1: {ID: 1, Timestamp: 1000},
-		2: {ID: 2, Timestamp: 2000},
-	}
-	windowStart := time.UnixMilli(500).UTC()
-	result := buildFailuresJSON(ranked, runMap, 2, windowStart)
+	result := buildFailuresJSON(failures, nil)
 
-	if len(result) != 1 {
-		t.Fatalf("expected 1 failure, got %d", len(result))
+	if len(result) != 25 {
+		t.Fatalf("expected 25 failures, got %d", len(result))
 	}
-	ic := result[0].InnermostCause
-	if ic == "" {
-		t.Fatal("InnermostCause should not be empty for cause chain errors")
+	for i, f := range result {
+		if i < 20 && len(f.Outputs) == 0 {
+			t.Errorf("failure %d (%s) should have outputs (top 20)", i, f.TestName)
+		}
+		if i >= 20 && len(f.Outputs) != 0 {
+			t.Errorf("failure %d (%s) should have nil outputs (beyond top 20)", i, f.TestName)
+		}
 	}
-	if !strings.Contains(ic, "context deadline exceeded") {
-		t.Errorf("InnermostCause should contain deepest cause, got %q", ic)
+}
+
+func TestBuildRunsJSON_FailedOnly(t *testing.T) {
+	runs := []JobRun{
+		{ID: 1, OverallResult: "S", TestFailures: 0},
+		{ID: 2, OverallResult: "F", TestFailures: 3, FailedTestNames: []string{"testA", "testB", "testC"}},
+		{ID: 3, OverallResult: "S", TestFailures: 0},
+		{ID: 4, OverallResult: "F", TestFailures: 1, FailedTestNames: []string{"testA"}},
+	}
+	result := buildRunsJSON(runs)
+
+	if len(result) != 2 {
+		t.Fatalf("expected 2 failed runs, got %d", len(result))
+	}
+	if result[0].ID != 2 || result[1].ID != 4 {
+		t.Errorf("expected run IDs 2 and 4, got %d and %d", result[0].ID, result[1].ID)
 	}
 }
 
@@ -439,4 +455,531 @@ func TestExtractPipelineStepErrors(t *testing.T) {
 		t.Errorf("pipeline step with no ERROR should keep original output, got %q", failures[2].Outputs[0].Output)
 	}
 }
+
+func TestEnrichLastPass(t *testing.T) {
+	now := time.Now()
+	runs := []JobRun{
+		{ID: 1, Timestamp: now.UnixMilli(), FailedTestNames: []string{"testA"}},
+		{ID: 2, Timestamp: now.Add(-1 * time.Hour).UnixMilli(), FailedTestNames: []string{"testB"}},
+		{ID: 3, Timestamp: now.Add(-2 * time.Hour).UnixMilli(), FailedTestNames: []string{"testA", "testB"}},
+		{ID: 4, Timestamp: now.Add(-3 * time.Hour).UnixMilli(), FailedTestNames: []string{"testA"}},
+		{ID: 5, Timestamp: now.Add(-4 * time.Hour).UnixMilli(), TestFailures: 1},
+	}
+
+	failures := []RecentFailure{
+		{TestName: "testA", LastPass: ""},
+		{TestName: "testB", LastPass: ""},
+		{TestName: "testA", LastPass: "2026-01-01T00:00:00Z"},
+		{TestName: "testC", LastPass: ""},
+	}
+
+	enrichLastPass(failures, runs)
+
+	// testA fails in run 1, passes in run 2 (not in FailedTestNames) → last_pass = run 2 timestamp
+	if failures[0].LastPass == "" {
+		t.Error("testA should have last_pass set")
+	}
+	expected := time.UnixMilli(runs[1].Timestamp).UTC().Format(time.RFC3339)
+	if failures[0].LastPass != expected {
+		t.Errorf("testA last_pass = %q, want %q", failures[0].LastPass, expected)
+	}
+
+	// testB fails in run 2, passes in run 1 → last_pass = run 1 timestamp
+	expected = time.UnixMilli(runs[0].Timestamp).UTC().Format(time.RFC3339)
+	if failures[1].LastPass != expected {
+		t.Errorf("testB last_pass = %q, want %q", failures[1].LastPass, expected)
+	}
+
+	// testA with pre-existing last_pass should not be overwritten
+	if failures[2].LastPass != "2026-01-01T00:00:00Z" {
+		t.Errorf("pre-existing last_pass should be preserved, got %q", failures[2].LastPass)
+	}
+
+	// testC never appears in FailedTestNames → passes in run 1 (newest with populated FailedTestNames)
+	expected = time.UnixMilli(runs[0].Timestamp).UTC().Format(time.RFC3339)
+	if failures[3].LastPass != expected {
+		t.Errorf("testC last_pass = %q, want %q", failures[3].LastPass, expected)
+	}
+}
+
+func TestEnrichLastPass_NoPopulatedRuns(t *testing.T) {
+	runs := []JobRun{
+		{ID: 1, Timestamp: time.Now().UnixMilli(), TestFailures: 3},
+		{ID: 2, Timestamp: time.Now().Add(-1 * time.Hour).UnixMilli(), TestFailures: 1},
+	}
+	failures := []RecentFailure{
+		{TestName: "testA", LastPass: ""},
+	}
+
+	enrichLastPass(failures, runs)
+
+	if failures[0].LastPass != "" {
+		t.Errorf("should not set last_pass when no runs have populated FailedTestNames, got %q", failures[0].LastPass)
+	}
+}
+
+func TestBuildDataWindow(t *testing.T) {
+	now := time.Now()
+	runs := []JobRun{
+		{Timestamp: now.UnixMilli()},
+		{Timestamp: now.Add(-24 * time.Hour).UnixMilli()},
+		{Timestamp: now.Add(-48 * time.Hour).UnixMilli()},
+	}
+
+	dw := buildDataWindow(runs, 7, 2, false)
+	if dw == nil {
+		t.Fatal("returned nil")
+	}
+	if dw.RequestedDays != 7 {
+		t.Errorf("RequestedDays = %d, want 7", dw.RequestedDays)
+	}
+	if dw.ActualDays != 3 {
+		t.Errorf("ActualDays = %d, want 3", dw.ActualDays)
+	}
+	if !dw.Truncated {
+		t.Error("should be truncated (3 < 7-1)")
+	}
+	if dw.NightlyRunsExcluded != 2 {
+		t.Errorf("NightlyRunsExcluded = %d, want 2", dw.NightlyRunsExcluded)
+	}
+	if dw.OldestRun == "" || dw.NewestRun == "" {
+		t.Error("OldestRun and NewestRun should be set")
+	}
+}
+
+func TestBuildDataWindow_Empty(t *testing.T) {
+	dw := buildDataWindow(nil, 7, 0, false)
+	if dw == nil {
+		t.Fatal("returned nil")
+	}
+	if !dw.Empty {
+		t.Error("should be empty")
+	}
+	if dw.EmptyReason == "" {
+		t.Error("EmptyReason should be set")
+	}
+}
+
+func TestBuildDailyRates(t *testing.T) {
+	base := time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC)
+	runs := []JobRun{
+		{Timestamp: base.UnixMilli(), TestFailures: 0},
+		{Timestamp: base.UnixMilli(), TestFailures: 2, FailedTestNames: []string{"a", "b"}},
+		{Timestamp: base.Add(24 * time.Hour).UnixMilli(), TestFailures: 0},
+		{Timestamp: base.Add(24 * time.Hour).UnixMilli(), TestFailures: 0},
+		{Timestamp: base.Add(48 * time.Hour).UnixMilli(), TestFailures: 1, FailedTestNames: []string{"a"}},
+	}
+
+	rates := buildDailyRates(runs)
+	if len(rates) != 3 {
+		t.Fatalf("daily rate count = %d, want 3", len(rates))
+	}
+	if rates[0].Date != "2026-04-20" || rates[0].Pass != 1 || rates[0].Total != 2 {
+		t.Errorf("day 0: %+v", rates[0])
+	}
+	if rates[1].Date != "2026-04-21" || rates[1].Pass != 2 || rates[1].Total != 2 {
+		t.Errorf("day 1: %+v", rates[1])
+	}
+	if rates[2].Date != "2026-04-22" || rates[2].Pass != 0 || rates[2].Total != 1 {
+		t.Errorf("day 2: %+v", rates[2])
+	}
+}
+
+func TestBuildEV2Coverage(t *testing.T) {
+	runs := []JobRun{
+		{Annotations: map[string]string{"ev2.rollout/ARO-HCP": "abc123"}},
+		{Annotations: map[string]string{"other": "val"}},
+		{},
+		{Annotations: map[string]string{"ev2.rollout/ARO-HCP": "def456"}},
+	}
+
+	cov := buildEV2Coverage(runs)
+	if cov.WithEV2 != 2 {
+		t.Errorf("WithEV2 = %d, want 2", cov.WithEV2)
+	}
+	if cov.Total != 4 {
+		t.Errorf("Total = %d, want 4", cov.Total)
+	}
+}
+
+func TestBuildEV2HashRates(t *testing.T) {
+	runs := []JobRun{
+		{Annotations: map[string]string{"ev2.rollout/ARO-HCP": "abc"}, TestFailures: 0},
+		{Annotations: map[string]string{"ev2.rollout/ARO-HCP": "abc"}, TestFailures: 1, FailedTestNames: []string{"x"}},
+		{Annotations: map[string]string{"ev2.rollout/ARO-HCP": "def"}, TestFailures: 0},
+		{TestFailures: 0},
+		{TestFailures: 1, FailedTestNames: []string{"y"}},
+	}
+
+	rates := buildEV2HashRates(runs)
+	if len(rates) != 3 {
+		t.Fatalf("hash count = %d, want 3 (abc, def, NO_HASH)", len(rates))
+	}
+	// Sorted by total desc: abc(2), NO_HASH(2), def(1)
+	byHash := map[string]ev2HashRateJSON{}
+	for _, r := range rates {
+		byHash[r.Hash] = r
+	}
+
+	abc := byHash["abc"]
+	if abc.Pass != 1 || abc.Fail != 1 || abc.Total != 2 || abc.IsCron {
+		t.Errorf("abc: %+v", abc)
+	}
+
+	noHash := byHash["NO_HASH"]
+	if noHash.Pass != 1 || noHash.Fail != 1 || !noHash.IsCron {
+		t.Errorf("NO_HASH: %+v", noHash)
+	}
+
+	def := byHash["def"]
+	if def.Pass != 1 || def.Fail != 0 || def.Total != 1 {
+		t.Errorf("def: %+v", def)
+	}
+}
+
+func TestBuildFailureScaleDist(t *testing.T) {
+	runs := []JobRun{
+		{TestFailures: 0},
+		{TestFailures: 2, FailedTestNames: []string{"a", "b"}},
+		{TestFailures: 10, FailedTestNames: []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"}},
+		{TestFailures: 20, FailedTestNames: []string{
+			"a", "b", "c", "d", "e", "f", "g", "h", "i", "j",
+			"k", "l", "m", "n", "o", "p", "q", "r", "s", "t",
+		}},
+	}
+
+	dist := buildFailureScaleDist(runs)
+	if dist.None != 1 {
+		t.Errorf("None = %d, want 1", dist.None)
+	}
+	if dist.Isolated != 1 {
+		t.Errorf("Isolated = %d, want 1 (2 failures <= 3)", dist.Isolated)
+	}
+	if dist.Moderate != 1 {
+		t.Errorf("Moderate = %d, want 1 (10 failures <= 15)", dist.Moderate)
+	}
+	if dist.Cascade != 1 {
+		t.Errorf("Cascade = %d, want 1 (20 failures > 15)", dist.Cascade)
+	}
+}
+
+func TestFailuresFromRuns(t *testing.T) {
+	base := time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC)
+	runs := []JobRun{
+		{ID: 1, Timestamp: base.UnixMilli(), FailedTestNames: []string{"testA", "testB"}},
+		{ID: 2, Timestamp: base.Add(1 * time.Hour).UnixMilli(), FailedTestNames: []string{"testA", "[sig-sippy] synthetic"}},
+		{ID: 3, Timestamp: base.Add(2 * time.Hour).UnixMilli(), FailedTestNames: []string{"testC"}},
+	}
+
+	failures := failuresFromRuns(runs)
+
+	byName := map[string]RecentFailure{}
+	for _, f := range failures {
+		byName[f.TestName] = f
+	}
+
+	if _, ok := byName["[sig-sippy] synthetic"]; ok {
+		t.Error("synthetic tests should be excluded")
+	}
+
+	a := byName["testA"]
+	if a.FailureCount != 2 {
+		t.Errorf("testA count = %d, want 2", a.FailureCount)
+	}
+	if len(a.Outputs) != 2 {
+		t.Errorf("testA outputs = %d, want 2", len(a.Outputs))
+	}
+
+	b := byName["testB"]
+	if b.FailureCount != 1 {
+		t.Errorf("testB count = %d, want 1", b.FailureCount)
+	}
+
+	c := byName["testC"]
+	if c.FailureCount != 1 {
+		t.Errorf("testC count = %d, want 1", c.FailureCount)
+	}
+}
+
+func TestFilterFailuresToRuns(t *testing.T) {
+	runs := []JobRun{
+		{ID: 100, FailedTestNames: []string{"Customer should create cluster", "Run pipeline step service/cluster"}},
+		{ID: 101, FailedTestNames: []string{"Customer should create cluster"}},
+		{ID: 200}, // passing run
+	}
+
+	failures := []RecentFailure{
+		{
+			TestName: "Customer should create cluster",
+			Outputs:  []FailureOutput{{RunID: 100}, {RunID: 101}},
+		},
+		{
+			TestName: "Run pipeline step service/cluster",
+			Outputs:  []FailureOutput{{RunID: 100}},
+		},
+		{
+			TestName: "TestCreateCluster", // HyperShift test, not in our runs
+			Outputs:  []FailureOutput{{RunID: 999}},
+		},
+		{
+			TestName: "install should succeed: overall", // HyperShift test
+			Outputs:  []FailureOutput{{RunID: 998}},
+		},
+	}
+
+	got := filterFailuresToRuns(failures, runs)
+
+	if len(got) != 2 {
+		t.Fatalf("expected 2 failures (ARO-HCP only), got %d", len(got))
+	}
+	names := map[string]bool{}
+	for _, f := range got {
+		names[f.TestName] = true
+	}
+	if !names["Customer should create cluster"] {
+		t.Error("should keep 'Customer should create cluster'")
+	}
+	if !names["Run pipeline step service/cluster"] {
+		t.Error("should keep 'Run pipeline step service/cluster'")
+	}
+	if names["TestCreateCluster"] {
+		t.Error("should filter out HyperShift test 'TestCreateCluster'")
+	}
+	if names["install should succeed: overall"] {
+		t.Error("should filter out HyperShift test 'install should succeed: overall'")
+	}
+}
+
+func TestFilterFailuresToRuns_KeepsByTestName(t *testing.T) {
+	runs := []JobRun{
+		{ID: 100, FailedTestNames: []string{"alert KubeVersionMismatch should not fire"}},
+	}
+
+	// Failure has a run ID NOT in our runs, but test name IS in FailedTestNames
+	failures := []RecentFailure{
+		{
+			TestName: "alert KubeVersionMismatch should not fire",
+			Outputs:  []FailureOutput{{RunID: 999}}, // not in runs
+		},
+	}
+
+	got := filterFailuresToRuns(failures, runs)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 failure (matched by test name), got %d", len(got))
+	}
+}
+
+func TestEnrichMissingErrors_TargetsRelevantRuns(t *testing.T) {
+	// Simulate presubmit scenario: recent runs failed at pipeline steps (1 failure),
+	// older runs have e2e test failures. enrichMissingErrors should target the runs
+	// referenced by e2e test failures, not the most recent failed runs.
+	now := time.Now()
+
+	// 30 recent runs with 1 pipeline step failure each (no test artifacts)
+	var runs []JobRun
+	for i := 0; i < 30; i++ {
+		runs = append(runs, JobRun{
+			ID:              int64(100 + i),
+			Timestamp:       now.Add(-time.Duration(i) * time.Hour).UnixMilli(),
+			FailedTestNames: []string{"Run pipeline step Microsoft.Azure.ARO.HCP.Service.Infra/service/cluster"},
+		})
+	}
+	// Older run with e2e test failures
+	testRunID := int64(50)
+	runs = append(runs, JobRun{
+		ID:              testRunID,
+		Timestamp:       now.Add(-40 * time.Hour).UnixMilli(),
+		FailedTestNames: []string{"Customer should create cluster", "Customer should delete cluster"},
+	})
+
+	failures := []RecentFailure{
+		{
+			TestName: "Run pipeline step Microsoft.Azure.ARO.HCP.Service.Infra/service/cluster",
+			Outputs:  []FailureOutput{{RunID: 100, Output: ""}},
+		},
+		{
+			TestName: "Customer should create cluster",
+			Outputs:  []FailureOutput{{RunID: testRunID, Output: ""}},
+		},
+	}
+
+	// enrichMissingErrors won't actually fetch GCS (no server), but we can verify
+	// it doesn't panic and that it skips pipeline step failures when collecting targets.
+	// The function will silently fail on GCS fetches, which is fine for this test.
+	enrichMissingErrors(failures, runs)
+
+	// Pipeline step failure should still be empty (skipped by enrichMissingErrors)
+	if failures[0].Outputs[0].Output != "" {
+		t.Errorf("pipeline step output should remain empty, got %q", failures[0].Outputs[0].Output)
+	}
+}
+
+func TestEnrichMissingErrors_SkipsWhenAllPopulated(t *testing.T) {
+	failures := []RecentFailure{
+		{
+			TestName: "Customer should create cluster",
+			Outputs:  []FailureOutput{{RunID: 1, Output: "already has error text"}},
+		},
+		{
+			TestName: "Run pipeline step something",
+			Outputs:  []FailureOutput{{RunID: 2, Output: ""}},
+		},
+	}
+	runs := []JobRun{{ID: 1}, {ID: 2}}
+
+	// Should return early: only empty output is for a pipeline step (skipped)
+	enrichMissingErrors(failures, runs)
+
+	if failures[0].Outputs[0].Output != "already has error text" {
+		t.Error("populated output should not be modified")
+	}
+}
+
+func TestBuildSurveyJSON_OutputShape(t *testing.T) {
+	now := time.Now()
+	data := &surveyData{
+		release:       "aro-integration",
+		requestedDays: 7,
+		runs: []JobRun{
+			{
+				ID: 1, Timestamp: now.UnixMilli(), OverallResult: "S",
+				TestFailures: 0, FailedTestNames: []string{},
+				Annotations: map[string]string{
+					"ev2.rollout/ARO-HCP": "abc123",
+					"ev2.rollout/region":  "eastus2",
+				},
+				Cluster: "build01",
+				URL:     "https://prow.ci.openshift.org/view/gs/test-platform-results/logs/periodic-ci-Azure-ARO-HCP-main-periodic-integration-e2e-parallel/1",
+			},
+			{
+				ID: 2, Timestamp: now.Add(-24 * time.Hour).UnixMilli(), OverallResult: "F",
+				TestFailures: 2, FailedTestNames: []string{"test-create-cluster", "test-delete-cluster"},
+				Annotations: map[string]string{
+					"ev2.rollout/ARO-HCP": "abc123",
+					"ev2.rollout/region":  "eastus2",
+				},
+				Cluster: "build01",
+				URL:     "https://prow.ci.openshift.org/view/gs/test-platform-results/logs/periodic-ci-Azure-ARO-HCP-main-periodic-integration-e2e-parallel/2",
+			},
+		},
+		failures: []RecentFailure{
+			{
+				TestName: "test-create-cluster", FailureCount: 2,
+				FirstFailure: "2026-04-20T00:00:00Z", LastFailure: "2026-04-21T00:00:00Z",
+				LastPass: "2026-04-22T00:00:00Z",
+				Outputs: []FailureOutput{
+					{RunID: 2, Output: "timeout exceeded"},
+				},
+			},
+		},
+	}
+
+	sj := buildSurveyJSON("int", data)
+
+	// Marshal to JSON and back to map to validate shape
+	raw, err := json.Marshal(sj)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	// Top-level fields
+	requiredKeys := []string{"env", "release", "status", "data_window", "daily_rates",
+		"ev2_coverage", "ev2_hash_rates", "failure_scale_dist", "region_rates", "runs", "failures"}
+	for _, k := range requiredKeys {
+		if _, ok := m[k]; !ok {
+			t.Errorf("missing top-level key %q", k)
+		}
+	}
+
+	// Status shape
+	status, _ := m["status"].(map[string]any)
+	for _, k := range []string{"streak", "current_green", "pass_rate", "total_runs"} {
+		if _, ok := status[k]; !ok {
+			t.Errorf("missing status.%s", k)
+		}
+	}
+
+	// Data window shape
+	dw, _ := m["data_window"].(map[string]any)
+	for _, k := range []string{"requested_days", "actual_days", "oldest_run", "newest_run", "truncated"} {
+		if _, ok := dw[k]; !ok {
+			t.Errorf("missing data_window.%s", k)
+		}
+	}
+
+	// Runs shape (failed only)
+	runs, _ := m["runs"].([]any)
+	if len(runs) != 1 {
+		t.Fatalf("runs count = %d, want 1 (failed only)", len(runs))
+	}
+	run0, _ := runs[0].(map[string]any)
+	for _, k := range []string{"id", "timestamp", "overall_result", "real_failures", "url"} {
+		if _, ok := run0[k]; !ok {
+			t.Errorf("missing runs[0].%s", k)
+		}
+	}
+
+	// Failures shape
+	failures, _ := m["failures"].([]any)
+	if len(failures) != 1 {
+		t.Fatalf("failures count = %d, want 1", len(failures))
+	}
+	f0, _ := failures[0].(map[string]any)
+	for _, k := range []string{"test_name", "failure_count", "first_failure", "last_failure",
+		"last_pass", "best_run_id", "total_runs", "outputs"} {
+		if _, ok := f0[k]; !ok {
+			t.Errorf("missing failures[0].%s", k)
+		}
+	}
+
+	// Outputs shape
+	outputs, _ := f0["outputs"].([]any)
+	if len(outputs) != 1 {
+		t.Fatalf("outputs count = %d, want 1", len(outputs))
+	}
+	o0, _ := outputs[0].(map[string]any)
+	for _, k := range []string{"run_id", "error"} {
+		if _, ok := o0[k]; !ok {
+			t.Errorf("missing outputs[0].%s", k)
+		}
+	}
+
+	// EV2 hash rates shape
+	hashRates, _ := m["ev2_hash_rates"].([]any)
+	if len(hashRates) == 0 {
+		t.Fatal("ev2_hash_rates should not be empty")
+	}
+	hr0, _ := hashRates[0].(map[string]any)
+	for _, k := range []string{"hash", "pass", "fail", "total", "pass_rate"} {
+		if _, ok := hr0[k]; !ok {
+			t.Errorf("missing ev2_hash_rates[0].%s", k)
+		}
+	}
+
+	// Region rates shape
+	regionRates, _ := m["region_rates"].([]any)
+	if len(regionRates) == 0 {
+		t.Fatal("region_rates should not be empty")
+	}
+	rr0, _ := regionRates[0].(map[string]any)
+	for _, k := range []string{"region", "pass", "total", "pass_rate"} {
+		if _, ok := rr0[k]; !ok {
+			t.Errorf("missing region_rates[0].%s", k)
+		}
+	}
+
+	// Failure scale dist shape
+	fsd, _ := m["failure_scale_dist"].(map[string]any)
+	for _, k := range []string{"none", "isolated", "moderate", "cascade"} {
+		if _, ok := fsd[k]; !ok {
+			t.Errorf("missing failure_scale_dist.%s", k)
+		}
+	}
+}
+
 

@@ -99,8 +99,6 @@ func runDig(args []string) error {
 		return dig.Pool()
 	case "podinfo":
 		return dig.Podinfo()
-	case "classify":
-		return dig.Classify()
 	case "steptime":
 		var baseline string
 		if len(rest) > 0 {
@@ -109,8 +107,6 @@ func runDig(args []string) error {
 		return dig.StepTime(baseline)
 	case "links":
 		return dig.Links()
-	case "extract":
-		return dig.Extract()
 	default:
 		return fmt.Errorf("unknown dig subcommand: %s", what)
 	}
@@ -596,27 +592,6 @@ func (d *digContext) Alerts() error {
 
 // --- Raw ---
 
-// --- Classify: structural error grouping + cascade detection ---
-
-type classifyJSON struct {
-	Scale  FailureScale `json:"scale"`
-	Groups []ErrorGroup `json:"error_groups,omitempty"`
-}
-
-func (d *digContext) Classify() error {
-	tests, err := d.loadTestResults()
-	if err != nil {
-		return d.emitJSON("classify", classifyJSON{
-			Scale: FailureScale{HasTestResults: false},
-		})
-	}
-	groups, scale := classifyErrors(tests, 0)
-	return d.emitJSON("classify", classifyJSON{
-		Scale:  scale,
-		Groups: groups,
-	})
-}
-
 // --- StepTime: step durations with optional baseline ---
 
 type stepTimeJSON struct {
@@ -675,22 +650,3 @@ func (d *digContext) Links() error {
 	return d.emitJSON("links", links)
 }
 
-// --- Extract: build-log + metrics structural extraction ---
-
-type extractJSON struct {
-	BuildLog *BuildLogExtract `json:"build_log,omitempty"`
-	Metrics  *MetricsExtract  `json:"metrics,omitempty"`
-}
-
-func (d *digContext) Extract() error {
-	result := extractJSON{}
-
-	if data, err := d.store.artifact(d.base, "build-log.txt"); err == nil {
-		result.BuildLog = extractBuildLog(data)
-	}
-	if data, err := d.store.artifact(d.base, "artifacts/ci-operator-metrics.json"); err == nil {
-		result.Metrics = extractMetricsEvents(data)
-	}
-
-	return d.emitJSON("extract", result)
-}

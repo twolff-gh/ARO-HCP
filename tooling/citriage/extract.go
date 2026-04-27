@@ -351,13 +351,33 @@ type PoolSummary struct {
 
 func extractPoolSummary(data []byte) *PoolSummary {
 	content := string(data)
-	return &PoolSummary{
+	result := &PoolSummary{
 		Total:      strings.Count(content, "resourceGroup:"),
-		Free:       strings.Count(content, "state: free"),
-		Assigned:   strings.Count(content, "state: assigned"),
-		Busy:       strings.Count(content, "state: busy"),
 		Contention: detectPoolContentionFromString(content),
 	}
+	inCurrent := false
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "- current:") || trimmed == "current:" {
+			inCurrent = true
+			continue
+		}
+		if trimmed == "history:" || trimmed == "resourceGroup:" {
+			inCurrent = false
+			continue
+		}
+		if inCurrent && strings.HasPrefix(trimmed, "state:") {
+			switch {
+			case strings.Contains(trimmed, "free"):
+				result.Free++
+			case strings.Contains(trimmed, "assigned"):
+				result.Assigned++
+			case strings.Contains(trimmed, "busy"):
+				result.Busy++
+			}
+		}
+	}
+	return result
 }
 
 func detectPoolContentionFromString(content string) []string {

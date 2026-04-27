@@ -30,24 +30,24 @@ All output is JSON.
 /tmp/citriage triage <run-id> [--context-days=3] [--baseline=<passing-run-id>]
 ```
 
-The `triage` command extracts structural signals from ALL artifacts in a single call. It returns a compact JSON object (~16KB for a cascade failure, ~8KB for an isolated failure) containing:
+One call extracts structural signals from ALL artifacts. Returns a JSON object:
 
-- **scale** — failure count, error group count, largest group percentage
-- **context** — environment, EV2 hash, region, timeout threshold (from prowjob.json)
-- **errors** — deduplicated error groups with test counts, source file:line, innermost cause
-- **steps** — pipeline step durations with failed flags and exit codes
-- **metrics** — ci-operator events (level, success, cause field), lease/pod latency
-- **build_log** — ERROR/FATAL lines, step result lines, tail, test fail count
-- **podinfo** — exit code, reason, OOM flag
-- **events** — CiJobFailed presence, warning count
-- **pool** — MSI container pool contention signals
-- **provision** — presubmit pipeline step results (total/failed counts)
-- **alerts** — presubmit Azure Monitor alerts (name, severity, known-issue flag)
-- **azure** — per-test ResponseError codes
-- **links** — test-to-resource-group mapping from custom-link-tools
-- **neighbors** — neighboring runs with same EV2 hash (pass/fail rates, per-test consistency)
-
-**Read the triage output first.** It tells you what kind of failure this is and where to look next. The `errors` field groups failures by similarity — when `largest_group_pct` is high (e.g. 70%+) with many failures, that typically means one root cause, not N independent issues.
+| Field | Source | What it tells you |
+|-------|--------|-------------------|
+| `total_tests` / `failed_tests` | extension_test_result | Scale of failure |
+| `failures[]` | extension_test_result | Each failed test: `name`, `duration_seconds`, raw `error` |
+| `context` | Sippy + run metadata | `env`, `is_presubmit`, `ev2_hash`, `region`, `pull_number` |
+| `steps[]` | ci-operator-step-graph | Pipeline step durations, which failed |
+| `metrics` | ci-operator-metrics | Step events, lease acquisition, pod scheduling latency |
+| `build_log` | build-log.txt | ERROR/FATAL lines, step results, tail, test fail count |
+| `podinfo` | podinfo.json | Exit code, reason, `oom_detected` |
+| `events` | build-resources/events.json | `ci_job_failed`, warning count |
+| `pool` | identities-pool-state.yaml | MSI container counts, `contention[]` |
+| `links[]` | custom-link-tools HTML | Test → resource group → Kusto cluster mapping |
+| `neighbors` | Sippy (same-hash runs) | Pass/fail rates, per-test consistency |
+| `provision` | junit_entrypoint.xml | Presubmit only: pipeline step pass/fail |
+| `alerts[]` | alerts.json | Presubmit only: Azure Monitor alerts |
+| `azure[]` | azure.log per test | ResponseError codes per failing test |
 
 ### With context from ciscan
 
@@ -57,62 +57,130 @@ Use the handoff — don't re-run `survey`. Start with `triage <run-id>` using th
 
 Use `survey --env=<env> --test=<pattern> --days=3` to find recent failing runs, then `triage <best-run-id>`.
 
+## Failure Mode Decision Trees
+
+Read the triage output. Classify the failure mode, then follow the appropriate tree:
+
+### Mode A: Timeout (duration ~2700s, error "context deadline exceeded")
+
+```
+1. podinfo.oom_detected?        → YES: OOM kill. Report memory pressure.
+2. pool.contention non-empty?   → YES: Pool exhaustion caused timeout. Report pool state.
+3. metrics.max_lease_acq > 300? → YES: Boskos exhaustion. Report lease wait.
+4. steps: which step is longest?
+   └─ provision step?           → YES: Infra provisioning timeout.
+   └─ test step at full timeout? → Continue to 5.
+5. azure[] has ResponseErrors?  → YES: Azure API issue. Follow Mode B.
+                                → NO:  Client-side timeout. Platform issue.
+6. neighbors.same_hash_passed?  → >0: Intermittent (flake). 0: Consistent.
+```
+
+Timeout with no infra signals and no Azure errors = cluster creation taking too long = problem is BETWEEN Azure API and cluster readiness (EventGrid, Maestro, HyperShift). This is the most common failure mode and the hardest to diagnose from CI artifacts alone.
+
+### Mode B: Azure API Error (azure field has ResponseErrors)
+
+```
+1. Read error codes in azure[].response_errors
+2. build_log.error_lines has same error? → Confirms propagation
+3. provision (presubmit): same error?    → Infra setup failure, not test
+4. Common codes:
+   ResourceNotFound    → Stale reference or race condition
+   QuotaExceeded       → Capacity (check region)
+   AuthorizationFailed → RBAC misconfiguration
+   RoleAssignment*     → MSI/permission issue
+```
+
+### Mode C: Pipeline Step Failure (step in steps[] has failed=true)
+
+```
+1. Which step failed? Check steps[].name + failed=true
+2. build_log.step_lines → step result message
+3. steps[].error_snippet → JUnit error for the step
+4. metrics.events → cause field for the step
+5. provision.failures (presubmit) → full ARM error chain
+```
+
+### Mode D: Infrastructure (events.ci_job_failed=true)
+
+```
+1. This is CI platform failure, not test failure
+2. build_log.error_lines → CI error details
+3. metrics → lease/pod scheduling issues
+4. podinfo → node eviction, scheduling failure
+5. Usually transient — check neighbors to confirm
+```
+
+### Mode E: Cascade (failed_tests >> 5, same error)
+
+```
+1. Read failures[].error — count DISTINCT error patterns
+2. If 1 pattern → one root cause. Follow the mode for that error type.
+3. The test count is irrelevant — report the single mechanism
+4. Shortest-duration failure = earliest failure = likely trigger test
+```
+
+## Artifact-to-Root-Cause Mapping
+
+| Field | Contains ROOT CAUSE for | Contains SYMPTOM for |
+|-------|------------------------|---------------------|
+| `failures[].error` | Test-level bugs, assertion failures | Infra issues (shows "timeout" not why) |
+| `steps` | Pipeline/build issues | — |
+| `azure` | Azure API errors, throttling | — |
+| `provision` | ARM deployment failures (presubmit) | — |
+| `metrics` | Scheduling/lease issues | — |
+| `podinfo` | OOM kills, node eviction | — |
+| `pool` | Pool exhaustion | — |
+| `events` | — | CiJobFailed = something broke, not what |
+| `build_log` | — | Error lines are downstream effects |
+| `neighbors` | — | Statistical context (flake vs regression) |
+
+## Signal Absence as Evidence
+
+Null/empty fields are diagnostic:
+- `azure` empty + timeout → client-side timeout, not API failure (the dominant mode)
+- `pool.contention` empty → not pool exhaustion
+- `podinfo.oom_detected` false → not memory pressure
+- `events.ci_job_failed` false → test failure, not CI infra
+- `metrics.max_lease_acquisition_seconds` near 0 → not Boskos contention
+- `provision` null (periodic run) → expected. Periodic doesn't provision — but presubmit DOES. When periodic has invisible-layer timeouts, check presubmit provision logs for the same time window.
+- `neighbors` null → dev environment or env lookup failed
+- `neighbors.same_hash_passed > 0` → flake, not deterministic
+- `neighbors.same_hash_passed == 0` → every run on this deploy failed → regression candidate
+- All fields present, no errors anywhere → test logic bug, not infra
+
 ## Second-Pass Drill-Down
 
-After `triage` gives the structural picture, use individual `dig` subcommands to drill into specific artifacts that need deeper inspection. These are for when the triage output points you somewhere specific — NOT for every investigation.
+After `triage` gives the structural picture, use `dig` subcommands for deeper inspection. Only when triage points you somewhere specific.
 
 ### `dig <run> azure <test>`
-Full Azure API call trace for a specific test — ALL entries with time, level, event, message. Use when triage shows ResponseError codes and you need the full API sequence.
+Full Azure API call trace — ALL entries with time, level, event, message. Use when triage shows ResponseError codes and you need the full API sequence.
 
 ### `dig <run> tests`
-Full test result list (all tests, not just failed). Use when you need to see passing test durations for comparison, or when the triage error grouping needs verification.
+Full test result list (all tests, not just failed). Use when you need passing test durations for comparison.
 
 ### `dig <run> metrics`
-Full ci-operator metrics JSON. Use when triage `metrics` events point to infrastructure issues and you need the complete lease/pod/node data.
+Full ci-operator metrics JSON. Use when triage `metrics` events point to infrastructure issues.
 
 ### `dig <run> provision`
-Presubmit only. Full ARM deployment pipeline steps (~133) with per-step pass/fail and failure messages. Use when triage `provision` shows failed steps and you need the full ARM error chain.
+Presubmit only. Full ARM deployment pipeline steps (~133) with per-step pass/fail and failure messages.
 
 ### `dig <run> alerts`
-Presubmit only. Full Azure Monitor alert details. Use when triage `alerts` shows unknown alerts worth investigating.
-
-### `dig <run> classify`
-Error grouping and cascade detection without the full triage extraction. Use when you only need the error structure (e.g., comparing two runs).
+Presubmit only. Full Azure Monitor alert details.
 
 ### `dig <run> steptime [baseline-run-id]`
-Step-graph durations with optional baseline comparison. Use when triage `steps` show unusual durations and you want to compare against a known-good run.
-
-### `dig <run> extract`
-Build-log + metrics structural extraction. Use when you need the extracted signals without the full triage (e.g., for a passing run comparison).
-
-### `dig <run> links`
-Test-to-resource-group mapping from custom-link-tools HTML. Use when you need Kusto query links or RG names for Azure portal investigation.
+Step-graph durations with optional baseline comparison.
 
 ### `dig <run> events`
-K8s events from the build cluster. Use when triage `events` shows warnings worth inspecting.
+K8s events from the build cluster.
 
 ### `dig <run> podinfo`
-Full pod info with container statuses. Use when triage `podinfo` shows OOM or unexpected exit codes.
+Full pod info with container statuses.
 
 ### `dig <run> pool`
-MSI container pool state. Use when triage `pool` shows contention signals.
+MSI container pool state.
 
-## Investigation Flow
-
-```
-1. triage <run-id>                    ← structural overview (always)
-   ├── Read scale: cascade? isolated?
-   ├── Read errors: what failed?
-   ├── Read steps: which step, how long?
-   └── Read neighbors: known pattern? flake?
-
-2. Drill into specifics (0-3 calls based on triage findings):
-   ├── dig azure <test>               ← when ResponseErrors present
-   ├── dig provision                  ← when presubmit provision failed
-   └── dig metrics                    ← when infra metrics need detail
-```
-
-Most investigations need only steps 1-2 (2-4 total commands).
+### `dig <run> links`
+Test-to-resource-group mapping. Use for Kusto queries or Azure portal navigation.
 
 ## Domain Knowledge
 
@@ -127,75 +195,68 @@ Regional Pipeline → EventGrid (MQTT) → SVC Pipeline → Maestro Server
 - **Shared-env presubmit** (`pull-ci-*-{stage,integration,prod}-e2e-parallel`): tests unmerged PR code against live environments
 - **Periodic** (`periodic-ci-*`): tests deployed code against shared environments. Has EV2 annotations.
 
+### Cross-run-type correlation
+When periodic shows all-timeout + zero-Azure-errors (Mode A, step 5-6):
+- The root cause is in an invisible layer (EventGrid, Maestro, HyperShift)
+- Check presubmit runs from the same time window — they have provision logs
+- `dig <presubmit-run> provision` may show EventGrid/Maestro/regional deploy failures
+- This correlation (periodic symptom → presubmit root cause) resolves ~30% of otherwise-inconclusive investigations
+
 ### Key caveats
 - **Prow timeout corruption:** When `startTime == endTime` in test results, Prow killed the test. Duration data is garbage.
-- **Cascade failures:** When `largest_group_pct` is high (e.g. 70%+) with many failures, the dominant error group likely shares one root cause. Investigate that group, not individual tests.
-- **EV2 annotations** are stronger deploy correlation evidence than GitHub PRs. Only on periodic runs. Presubmit has PR number/SHA instead.
+- **Cascade failures:** Read the error, don't count the tests. 30 tests sharing one error = 1 problem.
+- **EV2 annotations** are stronger deploy correlation evidence than GitHub PRs. Only on periodic runs.
 - **Synthetic tests** (`[sig-sippy]*`, `Job run should complete before timeout`) are filtered automatically.
-- **Azure ResponseErrors for timeouts:** The dominant failure mode (cluster creation timeout) produces zero Azure API errors. Triage's `azure` field will be empty. This is correct — the timeout is client-side, not an API failure.
-- **Pool state is end-of-run snapshot.** Contention signals in `pool` reflect final state, not peak contention. Build-log error lines capture the temporal contention signal.
+- **Pool state is end-of-run snapshot.** Not peak contention.
 
-### Rule-out using triage fields
-
-Check these fields directly — null means the artifact wasn't available:
-- `podinfo.oom_detected` → OOM kill
-- `pool.contention` → MSI pool exhaustion
-- `events.ci_job_failed` → CI infrastructure failure
-- `metrics.max_lease_acquisition_seconds` → Boskos pool exhaustion
-- `provision.failed_steps` → ARM deployment issues (presubmit)
-- `neighbors.same_hash_passed > 0` → same deploy passes sometimes → flake
-- `neighbors.same_hash_passed == 0` → consistent failure → regression candidate
+### Investigation escalation
+1. **Triage artifacts** — test failures, steps, metrics, podinfo, events, pool (you are here)
+2. **Azure API trace** — `dig azure <test>` for full request/response sequence
+3. **Cross-run-type** — find presubmit run from same time window, check provision logs
+4. **External telemetry** — Kusto queries using resource groups from `links`, Grafana dashboards
+5. **Service team** — when all CI artifacts exhausted
 
 ## Command Budget
 
-Maximum **8 commands** per investigation. The `triage` call counts as 1. Typical investigation: 2-4 commands total.
+Maximum **8 commands** per investigation. The `triage` call counts as 1. Typical: 2-4 commands.
 
 ## Output
-
-Investigations end in one of two outcomes:
 
 ### ROOT CAUSE FOUND
 
 ```
 ## Root Cause: [one-line summary]
 
-**WHAT:** [specific mechanism — not "tests are failing" but what is actually broken]
-**WHEN:** [onset date/time, from triage neighbors or survey]
-**WHERE:** [layer: Azure API | ARM deployments | pool/scheduling | platform | test code | deploy change]
-**WHY:** [trigger — deploy change, config change, resource exhaustion, upstream issue]
-**Error file:** [source_file.go:line from the triage error group]
+**WHAT:** [specific mechanism]
+**WHEN:** [onset from neighbors or survey]
+**WHERE:** [layer: Azure API | ARM | pool/scheduling | platform | test code | deploy]
+**WHY:** [trigger]
 
 ### Evidence Chain
 - [fact]: [data from triage field] — [URL]
 - [fact]: [data from dig drill-down] — [URL]
 
 ### Triage Summary
-- Scale: [failed_test_count]/[total_test_count], largest_group=[largest_group_pct]%
-- Error groups: [count] ([dominant group test count] tests share dominant signature)
-- Coverage: [list has_* fields present] | OOM=[bool], pool=[bool], azure_errors=[N], lease=[N]s
+- Tests: [failed_tests]/[total_tests]
+- Distinct errors: [N patterns in failures[].error]
+- Infra: OOM=[bool], pool=[bool], azure_errors=[N], lease=[N]s
 
-### Cross-Run Confirmation
-- [neighbors context or search results, or "skipped — one-off"]
+### Cross-Run
+- [neighbors context, or "skipped — one-off"]
 ```
 
 ### INCONCLUSIVE
 
 ```
-## Inconclusive: [one-line symptom summary]
+## Inconclusive: [symptom summary]
 
-**WHAT:** [symptom observed]
-**WHEN:** [onset with evidence]
-**WHERE:** Beyond CI artifact visibility — suspected [platform layer]
-**Error file:** [source_file.go:line]
-**RULED OUT:** [causes eliminated, citing triage fields as evidence]
-
-### Triage Summary
-- Scale: [failed/total], cascade=[bool]
-- Coverage: [list has_* fields present] | OOM=[bool], pool=[bool], azure_errors=[N], lease=[N]s
+**WHAT:** [symptom]
+**WHEN:** [onset]
+**WHERE:** Beyond CI artifact visibility — suspected [layer]
+**RULED OUT:** [causes, citing triage fields]
 
 ### Next Step
-[What investigation is needed — Kusto query, service logs, etc.]
-- Resource group: [from triage links field]
-- Time window: [from triage timestamp + duration]
-- Kusto links: [from triage links field if available]
+[What investigation needed — Kusto query, service logs, presubmit provision check]
+- Resource group: [from links]
+- Time window: [from timestamp + duration]
 ```

@@ -16,10 +16,10 @@ You do NOT inspect per-run artifacts. That's `/cidig`. Your tool is `survey`.
 ```
 
 - **SCOPE** — `periodic` (default), `presubmit`, or `all`
-  - `periodic` — INT, STG, PROD environments. Production health, deploy correlation. The most common ask.
-  - `presubmit` — Ephemeral PR test environments. Developer velocity, pipeline/build blockers, PR concentration.
-  - `all` — Both. Produces a longer report. Use when the user says "everything" or "how is CI?"
-- **DAYS** — Lookback period (default: 7 for periodic, 5 for presubmit)
+  - `periodic` — INT, STG, PROD environments. Production health, deploy correlation.
+  - `presubmit` — Ephemeral PR test environments. Developer velocity, pipeline/build blockers.
+  - `all` — Both. Use when the user says "everything" or "how is CI?"
+- **DAYS** — Lookback period, max 7 (default: 7 for periodic, 5 for presubmit)
 
 If the user doesn't specify a scope, ask: "Periodic (production health) or presubmit (PR velocity)?" — don't assume `all`.
 
@@ -40,20 +40,15 @@ All output is JSON.
 
 ## Workflow
 
-Follow these steps in order. Each step builds on the previous one.
-
 ### Step 1: Gather fleet data
-
-Run the survey(s) for the requested scope. Adapt `--days` to the user's requested timeframe.
 
 **periodic scope:**
 ```bash
 /tmp/citriage survey --env=all --days=7
-# Nightly (always include alongside periodic):
 /tmp/citriage survey --env=int --job=nightly --days=7
 /tmp/citriage survey --env=prod --job=nightly --days=7
 ```
-Run the nightly surveys in parallel with the main periodic survey.
+Run all three in parallel.
 
 **presubmit scope:**
 ```bash
@@ -62,122 +57,126 @@ Run the nightly surveys in parallel with the main periodic survey.
 
 **all scope:** Run periodic, nightly, and presubmit surveys in parallel.
 
-Only add `survey --env=dev --job=stage --days=7` if the user specifically asks about shared-env presubmit — these runs are rarely triggered and usually return empty data.
-
 ### Step 2: Check data reliability
 
-Before analyzing, verify the data:
-
-- **`data_window.truncated`** — if true, Sippy returned less data than requested. State the actual window ("requested 7 days, got 5") and do not present pass rates as representative of the full period.
-- **`ev2_coverage`** — if `with_ev2 / total < 50%`, deploy correlation is unreliable for that env. Note it.
+- **`data_window.truncated`** — if true, Sippy returned less data than requested. State the actual window and do not present pass rates as representative.
+- **`ev2_coverage`** — if `with_ev2 / total < 50%`, deploy correlation is unreliable. Note it.
 
 ### Step 3: Count distinct problems (not tests)
 
-Read the `error_groups` across all `failures` and cluster them yourself by error similarity. Tests whose dominant error text describes the same mechanism are one problem — report them as one finding, not N.
+Read the `outputs[].error` across all `failures` and cluster by reading the full error text. Tests with the same error mechanism are one problem.
 
-Guidelines for clustering:
-- Read the **full** error text in `error_groups`, not just the prefix. Errors that start with the same phrase (e.g., "failed to create HCP cluster") can have completely different root causes deeper in the message (e.g., timeout vs TLS cert mismatch vs quota exhaustion). Always read to the end.
-- **Pipeline step errors deserve extra attention.** Tests named `Run pipeline step ...` contain templatize structured log output. The actual diagnostic is usually buried inside the `err="..."` field — often an ARM JSON response body with `ERROR CODE`, `"message"`, and `"details"` fields. Read the entire error text, not just the step name and wrapper message. The root cause (e.g., `Resource 'applications' for API version 'beta' is not supported`) may be hundreds of characters deep. Quote the specific diagnostic in your finding, not the wrapper.
-- When a test appears in `cross_env_failures`, compare the full `error_groups` text **per environment** before assuming they share a root cause. The same test name in INT and PROD can fail for entirely different reasons — only the error text reveals this.
-- Errors at different source files but with the same operational failure (e.g., all timing out on cluster creation) are one problem.
-- Errors that look similar but name different operations (e.g., cluster creation timeout vs credential access timeout) are distinct problems.
-- When unsure, keep them separate — it's better to split than to merge incorrectly.
+**Output capping:** The top 20 failures by frequency have full error text in `outputs[]`. Lower-ranked failures have name + count only. If you need error text for a lower-ranked failure, note it for cidig drill-down using its `best_run_id`.
 
-Then check `co_failure_groups`. Tests with >80% co-occurrence overlap have a shared mechanism. If your error-based clusters and co-failure groups agree, you have high confidence they're the same issue.
+**Clustering rules:**
+- Read the **full** error text, not just the prefix. "failed to create HCP cluster" can mean timeout, TLS mismatch, or quota — the difference is deep in the message.
+- **Pipeline step errors** (`Run pipeline step ...`): check `outputs[].extracted_errors` first — these are the ERROR/FATAL lines only. The actual diagnostic is inside the `err="..."` field, often an ARM JSON body. Quote the specific error code, not the wrapper.
+- When a test appears in `cross_env_failures`, compare error text **per environment** before assuming shared root cause. Same test in INT and PROD can fail for different reasons.
+- Different source files but same operational failure = one problem.
+- Similar text but different operations = distinct problems.
+- When unsure, keep them separate.
 
-Only drill into individual `failures` entries for tests that don't cluster — these are distinct problems.
+**Multi-mechanism de-duplication:** When the same test fails with different error mechanisms across runs (e.g., timeout on run A, TLS mismatch on run B), count the test ONCE under its primary (most frequent) mechanism. Note the secondary mechanism as a variant within that finding, not a separate finding. Never let the same test appear in two findings with its full failure_count in both — that inflates the apparent scope.
 
-**Chronicity:** As you cluster, note each finding's chronicity:
-- `at_window_boundary: true` → chronic (predates the survey window). State it and move on.
-- `first_failure` well inside the window → regression. Note the onset date.
-- `co_failure_groups[].onset` near window start → chronic. Well inside → regression.
+**Co-failure detection:** Tests with identical `failure_count` and matching `first_failure`/`last_failure` windows are likely co-failing. Also check: do the same `outputs[].run_id` values appear across multiple failures? Tests that consistently share failing runs have a shared mechanism.
 
-Only run a 30-day baseline survey (`survey --env=ENV --days=30`) when a finding looks like a regression AND you need to confirm it didn't exist before. Budget: up to 3 single-env 30-day surveys. Always check `data_window.truncated` on 30-day results.
+**Trend direction:** Check `daily_rates` — is it getting worse, improving, or flat within the window? `last_pass` after `last_failure` = intermittent. Otherwise = persistent. Don't speculate about what happened before the window — this tool answers "what's broken now," not "when did it start."
 
 ### Step 4: Correlate each finding
 
-For each distinct problem, check these dimensions:
+For each distinct problem:
 
-- **Cross-env** — in `cross_env_failures`? Multi-env = code/infra issue. Single-env = environment-specific.
-- **Deploy correlation** — check `ev2_hash` values in the `runs` array near `first_failure`. If the hash changed between a passing and failing run, note the deploy. If the failure appears across many different hashes, it's not deploy-correlated. (Detailed deploy inspection belongs in `/cidig`, not here.)
+- **Cross-env** — in `cross_env_failures`? Multi-env = code/infra. Single-env = environment-specific.
+- **Deploy correlation** — check `ev2_hash` values in the `runs` array. If the hash changed between the last passing run and first failing run (by timestamp), note the deploy. If failures appear across many hashes, it's not deploy-correlated. Build the deploy timeline from `runs[]` in timestamp order — each row is one run with its timestamp, hash, result, and failure count. Show hash transitions so the reader can see deploy boundaries.
 - **Region** — check `region_rates`. Dramatically lower pass rate in one region = region-scoped.
-- **Duration** — ~2700s = timeout ceiling. ~600s = fast failure. Consistent = deterministic. High variance = intermittent.
+- **Duration** — ~2700s = timeout ceiling. ~600s = fast failure. Consistent = deterministic.
 - **Temporal** — multiple distinct problems sharing onset within 8 hours = shared trigger.
-- **Upstream bug check** — only when a finding looks like an OCP or platform bug (TLS/certificate errors, DNS issues, API server failures — not ARO-specific errors). Check Sippy search directly at `https://sippy.dptools.openshift.org/api/tests?search=ERROR_TEXT&release=aro-integration` for existing OCPBUGS tickets.
+- **Upstream** — only for OCP/platform bugs (TLS, DNS, API server errors). Check `https://sippy.dptools.openshift.org/api/tests?search=ERROR_TEXT&release=aro-integration`.
 
-### Step 5: Assess presubmit platform (presubmit and all scopes only)
+### Step 5: Assess presubmit (presubmit and all scopes only)
 
-Skip this step for periodic scope.
+Skip for periodic scope.
 
-From the dev survey:
-- **PR concentration** — check `pull_number` on failing runs. If most failures come from 1-2 PRs, the fleet is healthy and those PRs are broken. If failures are spread across many PRs, it's an infrastructure or shared-code issue. Report the distinction — it changes the triage decision.
-- **Pipeline step failures** (`Run pipeline step ...`) and **build failures** (`Build image ...`) block all PR testing — highest-urgency presubmit issues. For pipeline steps, read the full `error_groups` text to extract the actual ARM error code and detail message — report that, not just "ARM step failure."
-- **Test failures** — cross-reference against periodic findings. Same test + same full error text = shared root cause.
+- **PR concentration** — check `pull_number` on failing runs. Failures from 1-2 PRs = those PRs are broken, fleet is healthy. Failures spread across many PRs = infrastructure issue.
+- **Pipeline step failures** (`Run pipeline step ...`) block all PR testing — highest urgency. Read `extracted_errors` for the actual ARM error code.
+- **Cross-reference** test failures against periodic findings. Same test + same error = shared root cause.
 
-**PR deduplication (important):** A heavily-retested PR (e.g., 17 runs) inflates hit counts and distorts pass rates. When computing presubmit statistics:
-- Count **distinct PRs affected** alongside raw run/hit counts. Report both: "31 hits across 15 PRs" not just "31 hits."
-- **Flag outlier PRs** — any PR with >5 runs in the window. Note its contribution to the totals so readers can mentally adjust.
-- For each presubmit finding's **Affected PRs** section, show: PR number (linked), finding-specific hit count, total run fail rate, and whether the failures are fleet-wide (same errors across many PRs) or PR-specific.
-- **Never present raw run-count pass rates as fleet health** without noting PR distribution. "45.8% pass rate across 214 runs" is misleading if one PR contributed 17 of those runs.
+**PR deduplication:** A heavily-retested PR inflates counts. Report **distinct PRs affected** alongside raw counts: "31 hits across 15 PRs" not just "31 hits." Flag outlier PRs (>5 runs).
 
 ### Step 6: Prioritize, report, and dig
 
-Order findings by impact. Consider: test count affected, environment count, presubmit impact, regression vs chronic.
+Order findings by impact. Consider: test count, environment count, presubmit impact, regression vs chronic.
 
-**Every failure must appear in the report.** Findings are clustered by error mechanism, but each finding's `relatedFailures` section must list ALL tests that fall under that cluster — including singletons (1x). Tests that don't cluster into any finding get their own P3 finding. The reader must be able to see the full inventory of failures, not just the top N.
+**Every failure must appear in the report.** Cluster by mechanism, but list ALL tests per finding (including 1x singletons). Prefix each with `[PROD]`, `[STG]`, `[INT]`, or `[PRESUBMIT]`.
 
-For each failure entry in `relatedFailures`, prefix with the environment tag: `[PROD]`, `[STG]`, `[INT]`, or `[PRESUBMIT]`. Sort by hit count descending within each finding.
+For the **top 2-3 findings**, launch `/cidig` investigations in parallel as background agents. Use the `best_run_id` from each finding. Skip if the user says "just scan."
 
-For the **top 2-3 findings**, launch `/cidig` investigations in parallel as background agents. Pick the best failing run ID for each finding (most failures, most recent) and include the known context from your scan. The cidig skill will use `triage <run-id>` as its entry point — a single call that extracts all artifact signals with cascade detection and error deduplication. If the user says "just scan" or "don't dig," skip this.
+## Failure Mode Decision Trees
+
+When classifying findings:
+
+**Timeout failures** (duration ~2700s, "timeout", "context deadline exceeded"):
+- Check `daily_rates` for temporal onset
+- Check `ev2_hash_rates` for deploy correlation
+- Check `region_rates` for region skew
+- Cross-env? → platform issue. Single-env? → environment-specific.
+- All hashes failing? → not deploy-correlated (cron runs too = chronic)
+
+**ARM/Azure API failures** ("ERROR CODE", "ResponseError", ARM JSON body):
+- Read the full ARM error body — the error code IS the diagnosis
+- Common: RoleAssignmentLimitExceeded, QuotaExceeded, ResourceNotFound
+- Single-env = config/quota. Multi-env = API/service issue.
+
+**Pipeline step failures** ("Run pipeline step ..."):
+- Always read `extracted_errors` first
+- These are infra provisioning, not test code
+- Highest urgency for presubmit — blocks all PR testing
+
+**Cascade patterns** (`failure_scale_dist` shows many cascade runs):
+- 30 tests with one error = 1 problem. Count errors, not tests.
+- Typically: cluster creation timeout cascading to all dependent tests
+
+## Signal Absence as Evidence
+
+What you DON'T see is diagnostic:
+- No `cross_env_failures` for a test → environment-specific issue
+- `ev2_hash_rates` ALL hashes failing → not deploy-correlated (chronic or cron-only)
+- `region_rates` uniform → not region-specific
+- `failure_scale_dist` mostly "none" with few "cascade" → isolated regressions, not systemic
+- High `ev2_coverage` but no hash correlation → code change didn't cause it
+- `last_pass` well after `first_failure` → intermittent, not permanent regression
+
+## Cross-Run-Type Correlation
+
+Patterns that span run types reveal root cause layer:
+- **Periodic timeout + presubmit provision failure** → shared infra (EventGrid, Maestro, regional pipeline)
+- **Same test fails periodic + presubmit** → code bug, not environment
+- **Periodic fails, presubmit passes** → environment or deploy issue
+- **Presubmit fails, periodic passes** → PR code issue or ephemeral infra
+- **Nightly fails with different tests** → OCP candidate regression, not ARO
+- **Nightly + periodic same errors** → ARO issue manifesting on both OCP versions
 
 ## Command Budget
 
-**periodic scope:**
-
-| Command | Max calls |
-|---------|-----------|
-| `survey --env=all --days=N` | 1 |
-| `survey --env=int --job=nightly --days=N` | 1 |
-| `survey --env=prod --job=nightly --days=N` | 1 |
-| `survey --env=ENV --days=30` | 3 (one per env with failures) |
-| **Total** | **6** |
-
-**presubmit scope:**
-
-| Command | Max calls |
-|---------|-----------|
-| `survey --env=dev --days=N` | 1 |
-| `survey --env=dev --job=stage` | 1 (only if user requests shared-env presubmit) |
-| **Total** | **2** |
-
-**all scope:** Both budgets apply (total 8).
+**periodic:** survey --env=all (1) + nightly INT (1) + nightly PROD (1) = **3 max**
+**presubmit:** survey --env=dev (1) + shared-env (1 if requested) = **2 max**
+**all:** Both = **5 max**
 
 ## Data Reference
 
-### `survey  --env=all --days=N`
+### `survey --env=all --days=N`
 
 Per-environment data:
-- **data_window**: `{requested_days, actual_days, oldest_run, newest_run, truncated}`
 - **status**: `{streak, current_green, streak_regions, pass_rate, total_runs}`
+- **data_window**: `{requested_days, actual_days, oldest_run, newest_run, truncated}`
 - **daily_rates**: `[{date, pass, total}]`
 - **ev2_coverage**: `{with_ev2, total}`
-- **ev2_hash_rates**: `[{hash, pass, fail, total, pass_rate, is_cron}]` — per-EV2-hash pass/fail rates. `is_cron: true` for NO_HASH (cron-triggered) runs. Use to identify bad deploys (hash with 0% pass rate) and chronic cron failures. Sorted by total runs descending.
-- **failure_scale_dist**: `{none, isolated, moderate, cascade}` — count of runs by failure scale bucket: none=0 failures, isolated=1-3, moderate=4-15, cascade=16+. Tells you the shape of failures — mostly isolated regressions vs systemic cascades.
-- **region_rates**: `[{region, pass, total, pass_rate, low_sample}]` — only for envs with EV2 region annotations. `low_sample: true` when total < 3 runs — treat pass rates as anecdotal, not statistically meaningful.
-- **runs**: `[{id, timestamp, overall_result, real_failures, failed_tests[] (max 5), failed_tests_truncated, ev2_hash, region, pull_number, url}]`
-  - `failed_tests`: capped at 5 per run. Use `real_failures` for the actual count. Full test lists are in the `failures` array.
-  - `pull_number`: PR number extracted from the Prow URL (presubmit only; 0 for periodic). Use to distinguish "one bad PR" from fleet-wide issues.
-- **failures**: `[{test_name, failure_count, regular_hits, first/last_failure, last_pass, regions, at_window_boundary, error_groups[{error, count}], innermost_cause, daily_hits[{date, count}], best_run_id, best_run_url, total_runs}]`
-  - `at_window_boundary`: true when `first_failure` is within 24h of the survey window start — the failure likely predates the window (chronic)
-  - `chronicity`: `"at_boundary"` (predates window, chronic), `"within_window"` (appeared during window, regression candidate), or `"intermittent"` (last_pass is after last_failure, flaky). More precise than `at_window_boundary` alone.
-  - `innermost_cause`: the deepest segment after "caused by:" or ", error:" chains. Empty for errors without Go-style cause chains (ARM errors, alerts, build failures). When empty, read the full `error_groups[].error` text directly — the raw error text is preserved without stripping or truncation.
-- **co_failure_groups**: `[{leader, members[{test, total_failures, co_failures, solo_failures}], min_overlap_pct, distinct_runs, common_run_ids[], common_ev2_hashes[], common_regions[], onset}]`
-  - `distinct_runs`: total number of runs where 2+ members co-failed (before `common_run_ids` is capped at 10). Low count with many members = concentrated in a few bad runs.
-- **co_failure_stats**: `{threshold, adapted_threshold, total_failing_tests, eligible_tests, pairs_checked, pairs_above_threshold, max_overlap_pct, reason}`
-  - `total_failing_tests`: distinct tests in the run data (before the 2+ runs filter). Compare against `eligible_tests` to see dropout.
-  - `adapted_threshold`: when eligible tests have ≤5 runs each, threshold is automatically lowered to 0.5. Only present when adaptation occurred.
-- **cross_env_failures** (top-level in `--env=all`): `[{test_name, env_count, environments[{env, hits, run_id}]}]` — error details are in the per-env `failures` array, look up by test name
-
+- **ev2_hash_rates**: `[{hash, pass, fail, total, pass_rate, is_cron}]` — sorted by total desc. `is_cron: true` for NO_HASH. Use to identify bad deploys (hash with 0% pass rate).
+- **failure_scale_dist**: `{none, isolated, moderate, cascade}` — run count by failure bucket: none=0, isolated=1-3, moderate=4-15, cascade=16+.
+- **region_rates**: `[{region, pass, total, pass_rate, low_sample}]` — `low_sample: true` when total < 3.
+- **runs**: FAILED RUNS ONLY. `[{id, timestamp, overall_result, real_failures, ev2_hash, region, cluster, pull_number, sha, url}]` — passing runs are captured in the aggregate arrays above. `sha` is the PR commit SHA (presubmit only) — use to distinguish "same PR, different push" from "same PR, retested same code."
+- **failures**: `[{test_name, failure_count, first_failure, last_failure, last_pass, best_run_id, best_run_url, total_runs, outputs[{run_id, error, extracted_errors}]}]` — sorted by frequency desc. **Top 20 have full `outputs[]`. Remaining have name + count only (no outputs).** `extracted_errors` contains ERROR/FATAL lines for pipeline step tests.
+- **cross_env_failures** (in `--env=all`): `[{test_name, env_count, environments[{env, hits, run_id}]}]` — error text is in per-env `failures`, look up by test name.
 
 ## Domain Knowledge
 
@@ -185,88 +184,64 @@ Per-environment data:
 
 **Three CI run types:**
 
-| Type | Job pattern | Infra | Trigger | Query |
-|---|---|---|---|---|
-| Presubmit (ephemeral) | `pull-ci-*-e2e-parallel` | Provisions own env | PR push | `--env=dev` |
-| Presubmit (shared env) | `pull-ci-*-{stage,integration,prod}-e2e-parallel` | Shared INT/STG/PROD | `/test e2e-stage-parallel` | `--env=dev --job=stage` |
-| Periodic | `periodic-ci-*-{stage,integration,prod}-e2e-parallel` | Shared INT/STG/PROD | EV2 deploy / cron | `--env=int` / `--env=stg` / `--env=prod` |
+| Type | Job pattern | Trigger | Query |
+|---|---|---|---|
+| Presubmit (ephemeral) | `pull-ci-*-e2e-parallel` | PR push | `--env=dev` |
+| Presubmit (shared env) | `pull-ci-*-{stage,integration,prod}-e2e-parallel` | `/test` command | `--env=dev --job=stage` |
+| Periodic | `periodic-ci-*-e2e-parallel` | EV2 deploy / cron | `--env=int/stg/prod` |
 
-**EV2 annotations:** `ev2.rollout/ARO-HCP` = deploy hash, `ev2.rollout/region` = target region. Only on periodic runs. INT has ~100% coverage, STG ~42%, PROD ~88%.
+**EV2 annotations:** `ev2.rollout/ARO-HCP` = deploy hash, `ev2.rollout/region` = target region. Periodic only. INT ~100%, STG ~42%, PROD ~88%.
 
-**Nightly runs:** Always included as a separate section. High expected failure rate (candidate OCP). Query with `--job=nightly`. Summarize pass rate and call out nightly-specific failures (tests not seen in periodic), but defer full clustering until fleet-wide issues resolve.
+**Nightly runs:** Separate section. High expected failure rate (candidate OCP). Query with `--job=nightly`. Note nightly-specific failures not seen in periodic.
 
-**Do not maintain a mental list of known failure modes.** Read the `error_groups` on each failure — they show what's actually failing right now with full error text. Cluster by error similarity yourself. Report what you see, not what you expect.
+**Do not maintain a mental list of known failures.** Read the error text. Cluster by similarity. Report what you see.
 
-## Output Format
-
-The primary output is the HTML report (Step 7). In-conversation text should be a brief summary pointing the user to the report.
-
-**In conversation:** After generating the report, output a short summary: fleet status one-liner per env, number of findings by priority, and note that the HTML report is open. Don't reproduce the full report as text — the HTML is the deliverable.
-
-Two valid outcomes:
-1. **Findings that need attention** — HTML report with findings, plus cidig investigations launched for the top findings
-2. **Fleet healthy** — all environments passing, note streak lengths. Still produce the HTML report (it's useful as a record).
+## Output
 
 ### Step 7: Publish HTML report
 
-After all analysis and cidig investigations complete, produce the HTML report.
+**Template:** `tooling/citriage/report-template.html`. Contains CSS, JS `render()`, and `const DATA = null;` placeholder. Do NOT read or copy the template — just write the DATA JSON and run the injection command.
 
-**Template:** `report-template.html` in this skill's directory is a data-driven template. It contains all CSS, a JS `render()` function, and a `const DATA = null;` placeholder. You inject data by replacing that line.
+**How:**
+1. Write DATA object (JSON) to `/tmp/ciscan-data.json`
+2. Inject into template: `sed "s|const DATA = null;|const DATA = $(python3 -c "import json,sys;print(json.dumps(json.load(sys.stdin)))" < /tmp/ciscan-data.json);|" tooling/citriage/report-template.html > /tmp/ciscan-report.html`
+3. Open with `xdg-open /tmp/ciscan-report.html`
 
-**How to produce the report:**
-
-1. Read `report-template.html`
-2. Build the DATA object (JSON) following the contract in the template's HTML comment
-3. Write a copy to `/tmp/ciscan-report.html`, replacing `const DATA = null;` with `const DATA = { ... };` containing your analysis
-4. Open with `xdg-open /tmp/ciscan-report.html`
-
-The DATA object shape (see template HTML comment for full contract):
-
+**DATA shape:**
 ```json
 {
   "title": "CI Fleet Assessment",
-  "subtitle": "All scopes · 7-day window · N findings",
-  "generated": "2026-04-25T14:00:00Z",
-  "fleetCards": [
-    { "env": "int", "name": "Integration", "passRate": 53.0,
-      "detail": "17/32 runs · streak: 1 red", "severity": "warning",
-      "sparkline": [{"date": "04/19", "pct": 60, "color": "yellow"}] }
-  ],
-  "findings": [
-    { "priority": "P1", "envs": ["int","stg","prod"],
-      "title": "...", "error": "...",
-      "dims": {"Chronicity": "Chronic", "Tests affected": "~15/env"},
-      "hypothesis": "...", "action": "...",
-      "deployTimeline": [{"env": "PROD", "rows": [
-        {"pass": false, "ts": "04/22 09:10", "hash": "3e5c4d5", "meta": "3 failures", "newDeploy": false}
-      ]}],
-      "affectedPRs": [{"number": 4901, "url": "...", "hits": 5, "failRate": 80, "annotation": "fleet-wide"}],
-      "relatedFailures": [{"count": 16, "name": "[PROD] no-CNI private cluster...", "error": "failed to create...", "url": "..."}],
-      "evidence": ["Step 1: ...", "Step 2: ..."] }
-  ],
-  "nightly": [{"env": "Nightly INT", "passRate": 0, "runs": 6, "detail": "all failing"}],
-  "coverageGaps": ["STG nightly not queried"]
+  "subtitle": "scope · window · N findings",
+  "generated": "ISO 8601",
+  "fleetCards": [{ "env", "name", "passRate", "detail", "severity", "sparkline" }],
+  "findings": [{
+    "priority": "P1|P2|P3",
+    "envs": ["int","stg"],
+    "title": "...", "error": "...",
+    "dims": {"Trend": "...", "Tests affected": "..."},
+    "hypothesis": "...", "action": "...",
+    "deployTimeline": [...], "affectedPRs": [...],
+    "relatedFailures": [{"count", "name", "error", "url"}],
+    "evidence": ["[source:field] observation — value"]
+  }],
+  "nightly": [{"env", "passRate", "runs", "detail"}],
+  "coverageGaps": ["..."]
 }
 ```
 
-**Severity thresholds:** passRate <30% = "critical" (red), 30-60% = "warning" (yellow), >60% = "ok" (green). Sparkline colors follow the same rule per day.
+**Severity:** passRate <30% = "critical", 30-60% = "warning", >60% = "ok".
 
-**Finding fields:**
-- `priority`: "P1" (regression/degrading), "P2" (chronic/significant), "P3" (intermittent/resolving)
-- `envs`: array of environment tags for filtering
-- `dims`: key-value pairs for the dimensions grid (Chronicity, Tests affected, Deploy correlated, Region, etc.)
-- `hypothesis`: use "Hypothesis" not "Root cause" — state what evidence would confirm it
-- `deployTimeline`, `affectedPRs`: optional expandable sections
-- `evidence`: **REQUIRED** — each step must cite the data source and specific values. Format: `"[source:field] observation — value"`. Examples: `"survey.env=prod.ev2_hash_rates: all hashes 0% — 3e5c4d5 0/7, 5276b68 0/2"`, `"survey.env=prod.runs[12]: cascade onset — 29 failures at hash a16d7bc, 04/24 18:17"`, `"error_groups[0].error: source file — cluster_create_complex_cilium_kv.go:104"`. When a finding came from a specific survey field, name the field. When an error points to a source file and line, include it.
-- `relatedFailures`: **REQUIRED and EXHAUSTIVE** — every test that falls under this finding, prefixed with `[ENV]`, sorted by count descending. Include singletons. This is not a curated sample — it's the full inventory.
+**Deploy timeline rows:** Each row is ONE RUN in timestamp order — `ts` is the actual run time (e.g., `"04/25 23:00"`), `hash` is its EV2 hash, `pass`/`fail` is the result, `meta` is a brief note (e.g., `"34 failures"`). Set `newDeploy: true` when the hash changes from the previous row. Do NOT aggregate into "hash totals" — the reader needs the chronological story to see deploy boundaries.
 
-All sections render automatically from the DATA object. The template handles filtering, sparklines, expandable details, and styling.
+**Findings:** `evidence` is REQUIRED — cite source and value. `relatedFailures` is REQUIRED and EXHAUSTIVE — every test, prefixed with `[ENV]`, sorted by count.
+
+**In conversation:** Brief summary (fleet status, finding count). HTML report is the deliverable.
 
 ## Error Handling
 
 | Situation | Action |
 |---|---|
-| Sippy API down | Note "unavailable." Report what you have. |
-| `data_window.truncated: true` | State the actual window. Do not present as a full baseline. |
-| No failures in survey | Fleet healthy. Report and stop. |
-| EV2 coverage < 50% | Note in report — deploy correlation unreliable for that env. |
+| Sippy down | Note "unavailable." Report what you have. |
+| `data_window.truncated` | State actual window. Don't present as full baseline. |
+| No failures | Fleet healthy. Report. |
+| EV2 coverage < 50% | Note — deploy correlation unreliable. |
