@@ -62,6 +62,17 @@ type surveyJSON struct {
 	Runs             []runJSON             `json:"runs"`
 	Failures         []failureJSON         `json:"failures"`
 	Signatures       []signatureJSON       `json:"signatures,omitempty"`
+	EV2Onsets        []ev2OnsetJSON        `json:"ev2_onsets,omitempty"`
+}
+
+type ev2OnsetJSON struct {
+	TestName      string `json:"test_name"`
+	LastPassHash  string `json:"last_pass_hash"`
+	FirstFailHash string `json:"first_fail_hash"`
+	LastPassRun   int64  `json:"last_pass_run"`
+	FirstFailRun  int64  `json:"first_fail_run"`
+	LastPassTime  string `json:"last_pass_time"`
+	FirstFailTime string `json:"first_fail_time"`
 }
 
 type signatureJSON struct {
@@ -291,6 +302,7 @@ func buildSurveyJSON(env string, data *surveyData) surveyJSON {
 	backfillErrorsFromEnvelopes(data.failures, result.Runs)
 	result.Failures = buildFailuresJSON(data.failures, data.runs)
 	result.Signatures = buildSignatures(result.Failures)
+	result.EV2Onsets = detectEV2Onsets(data.failures, data.runs)
 
 	return result
 }
@@ -900,6 +912,60 @@ func ev2Region(r JobRun) string {
 		return ""
 	}
 	return r.Annotations[ev2RegionAnnotation]
+}
+
+// detectEV2Onsets finds tests where the EV2 deployment hash changed between
+// the last passing run and the first failing run. This is the structural
+// signal for deploy regressions — a hash transition at the pass→fail boundary
+// means the code change between those hashes is the suspect set. Cron runs
+// (NO_HASH) are skipped. Only reports transitions where the hashes differ.
+func detectEV2Onsets(failures []RecentFailure, runs []JobRun) []ev2OnsetJSON {
+	sorted := slices.Clone(runs)
+	slices.SortFunc(sorted, func(a, b JobRun) int {
+		return cmp.Compare(a.Timestamp, b.Timestamp)
+	})
+
+	failingTests := map[string]bool{}
+	for _, f := range failures {
+		if !isSyntheticTest(f.TestName) {
+			failingTests[f.TestName] = true
+		}
+	}
+
+	var onsets []ev2OnsetJSON
+	for testName := range failingTests {
+		var lastPass, firstFail *JobRun
+		for i := range sorted {
+			r := &sorted[i]
+			hash := ev2Hash(*r)
+			if hash == "" {
+				continue
+			}
+			failed := slices.Contains(r.FailedTestNames, testName)
+			passed := !failed && (realFailureCount(*r) == 0 || len(r.FailedTestNames) > 0)
+			if passed {
+				lastPass = r
+				firstFail = nil
+			} else if failed && firstFail == nil {
+				firstFail = r
+			}
+		}
+		if lastPass != nil && firstFail != nil && ev2Hash(*lastPass) != ev2Hash(*firstFail) {
+			onsets = append(onsets, ev2OnsetJSON{
+				TestName:      testName,
+				LastPassHash:  ev2Hash(*lastPass),
+				FirstFailHash: ev2Hash(*firstFail),
+				LastPassRun:   lastPass.ID,
+				FirstFailRun:  firstFail.ID,
+				LastPassTime:  time.UnixMilli(lastPass.Timestamp).UTC().Format(time.RFC3339),
+				FirstFailTime: time.UnixMilli(firstFail.Timestamp).UTC().Format(time.RFC3339),
+			})
+		}
+	}
+	slices.SortFunc(onsets, func(a, b ev2OnsetJSON) int {
+		return cmp.Compare(a.TestName, b.TestName)
+	})
+	return onsets
 }
 
 func isSyntheticTest(name string) bool {

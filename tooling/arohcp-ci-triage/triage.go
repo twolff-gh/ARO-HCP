@@ -1,10 +1,12 @@
 package main
 
 import (
+	"cmp"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 )
@@ -20,6 +22,7 @@ type TriageResult struct {
 	TotalTests  int                `json:"total_tests"`
 	FailedTests int                `json:"failed_tests"`
 	Failures    []TriageFailure    `json:"failures"`
+	ErrorGroups []ErrorGroup       `json:"error_groups,omitempty"`
 	Steps       []StepTiming       `json:"steps,omitempty"`
 	Metrics     *MetricsExtract    `json:"metrics,omitempty"`
 	BuildLog    *BuildLogExtract   `json:"build_log,omitempty"`
@@ -42,9 +45,17 @@ type RunContext struct {
 }
 
 type TriageFailure struct {
-	Name        string  `json:"name"`
-	DurationSec float64 `json:"duration_seconds"`
-	Error       string  `json:"error,omitempty"`
+	Name        string   `json:"name"`
+	DurationSec float64  `json:"duration_seconds"`
+	Error       string   `json:"error,omitempty"`
+	OutputTail  []string `json:"output_tail,omitempty"`
+}
+
+type ErrorGroup struct {
+	Signature   string   `json:"signature"`
+	Count       int      `json:"count"`
+	Tests       []string `json:"tests"`
+	SampleError string   `json:"sample_error,omitempty"`
 }
 
 type NeighborContext struct {
@@ -116,16 +127,27 @@ func runTriage(args []string) error {
 	// 2. TESTS
 	tests, testErr := dig.loadTestResults()
 	if testErr == nil && tests != nil {
+		failCount := 0
+		for _, t := range tests {
+			if t.Result == "failed" {
+				failCount++
+			}
+		}
 		for _, t := range tests {
 			result.TotalTests++
 			if t.Result == "failed" {
 				result.FailedTests++
-				result.Failures = append(result.Failures, TriageFailure{
+				tf := TriageFailure{
 					Name:        t.Name,
 					DurationSec: float64(t.Duration) / 1000.0,
 					Error:       t.Error,
-				})
+				}
+				tf.OutputTail = extractOutputTail(t.Output, failCount, t.Error)
+				result.Failures = append(result.Failures, tf)
 			}
+		}
+		if result.FailedTests > 5 {
+			result.ErrorGroups = buildErrorGroups(result.Failures)
 		}
 	} else if data, err := dig.store.artifact(dig.base, "artifacts/junit_operator.xml"); err == nil {
 		entries := parseJUnitForTriage(data)
@@ -338,4 +360,70 @@ func buildNeighborContext(result *TriageResult, days int) *NeighborContext {
 	}
 
 	return nc
+}
+
+// extractOutputTail returns the last N lines of a test's stdout output.
+// Budget: ≤5 failures → 20 lines per test; 6-20 → 10 lines only when
+// error text is diagnostically empty ("Interrupted by User", crash dumps);
+// 21+ → skip entirely (cascade dedup is sufficient). These thresholds
+// are from SIGNAL-ANALYSIS-UNIFIED.md §2c.
+func extractOutputTail(output string, totalFailures int, errorText string) []string {
+	if output == "" || totalFailures > 20 {
+		return nil
+	}
+	n := 20
+	if totalFailures > 5 {
+		if !isDiagnosticallyEmpty(errorText) {
+			return nil
+		}
+		n = 10
+	}
+	lines := strings.Split(output, "\n")
+	var nonEmpty []string
+	for _, line := range lines {
+		if strings.TrimSpace(line) != "" {
+			nonEmpty = append(nonEmpty, line)
+		}
+	}
+	if len(nonEmpty) <= n {
+		return nonEmpty
+	}
+	return nonEmpty[len(nonEmpty)-n:]
+}
+
+func isDiagnosticallyEmpty(err string) bool {
+	return err == "" ||
+		strings.Contains(err, "Interrupted by User") ||
+		strings.Contains(err, "Deserialization Error")
+}
+
+// buildErrorGroups deduplicates failures by normalized error signature.
+// Only computed when >5 failures (cascade territory). Groups failures with
+// the same normalized error into buckets with count and test list, sorted
+// by count descending. Uses normalizeError from normalize.go.
+func buildErrorGroups(failures []TriageFailure) []ErrorGroup {
+	groups := map[string]*ErrorGroup{}
+	var order []string
+	for _, f := range failures {
+		sig := "(no error text)"
+		if f.Error != "" {
+			sig = normalizeError(f.Error)
+		}
+		g, exists := groups[sig]
+		if !exists {
+			g = &ErrorGroup{Signature: sig, SampleError: f.Error}
+			groups[sig] = g
+			order = append(order, sig)
+		}
+		g.Count++
+		g.Tests = append(g.Tests, f.Name)
+	}
+	result := make([]ErrorGroup, 0, len(order))
+	for _, sig := range order {
+		result = append(result, *groups[sig])
+	}
+	slices.SortFunc(result, func(a, b ErrorGroup) int {
+		return cmp.Compare(b.Count, a.Count)
+	})
+	return result
 }
