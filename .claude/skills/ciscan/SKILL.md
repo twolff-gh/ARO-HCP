@@ -107,7 +107,7 @@ Every failed run in `runs[]` has an `envelope` with data extracted from GCS arti
 For each signature, correlate using fleet metrics AND envelopes:
 
 - **Cross-env** — check `cross_env_signatures`. Multi-env = code/infra. Single-env = environment-specific.
-- **Deploy correlation** — check `ev2_hash_rates`. All hashes failing = not deploy-correlated. One hash at 0% = suspect deploy.
+- **Deploy correlation** — check `ev2_onsets` first. If a test has an onset, the commits between those hashes are the suspect set. Also check `ev2_hash_rates` — all hashes failing = not deploy-correlated (chronic). One hash at 0% = suspect deploy.
 - **Region** — check `region_rates`. Skewed pass rate = region-scoped.
 - **Trend** — check `daily_rates`. Getting worse, improving, or flat?
 - **Infra vs test** — check envelopes: `exit_code`, `oom`, `lease_wait_s`, `pod_sched_s`. If all normal, the failure is in the test/service layer, not CI infrastructure.
@@ -184,6 +184,8 @@ Patterns that span run types reveal root cause layer:
 - **signatures**: `[{key, hit_count, test_count, tests[], first_failure, last_failure, best_run_id, representative_error}]`
   - Pre-grouped by normalized error. One signature = one problem regardless of test count.
   - Sorted by hit_count desc.
+- **ev2_onsets**: `[{test_name, last_pass_hash, first_fail_hash, last_pass_run, first_fail_run, last_pass_time, first_fail_time}]`
+  - Pre-computed pass→fail EV2 hash transitions. Different hashes = deploy regression candidate. Empty = chronic issue (no hash transition in window).
 - **cross_env_failures**: `[{test_name, env_count, environments[{env, hits, run_id}]}]`
 - **cross_env_signatures**: `[{key, env_count, total_hits, environments[{env, hits, run_id}]}]`
 

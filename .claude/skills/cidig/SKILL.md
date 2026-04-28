@@ -36,7 +36,8 @@ One call extracts structural signals from ALL artifacts. Returns a JSON object:
 | Field | Source | What it tells you |
 |-------|--------|-------------------|
 | `total_tests` / `failed_tests` | extension_test_result | Scale of failure |
-| `failures[]` | extension_test_result | Each failed test: `name`, `duration_seconds`, raw `error` |
+| `failures[]` | extension_test_result | Each failed test: `name`, `duration_seconds`, `error`, `output_tail` (last N lines of stdout) |
+| `error_groups[]` | normalized failures | Deduplicated signatures with counts (only when >5 failures) |
 | `context` | Sippy + run metadata | `env`, `is_presubmit`, `ev2_hash`, `region`, `pull_number` |
 | `steps[]` | ci-operator-step-graph | Pipeline step durations, which failed |
 | `metrics` | ci-operator-metrics | Step events, lease acquisition, pod scheduling latency |
@@ -118,8 +119,9 @@ Timeout with no infra signals and no Azure errors = cluster creation taking too 
 ### Mode E: Cascade (failed_tests >> 5, same error)
 
 ```
-1. Read failures[].error — count DISTINCT error patterns
-2. If 1 pattern → one root cause. Follow the mode for that error type.
+1. Read error_groups[] — errors are already deduplicated by normalized signature.
+   Each group is one mechanism. Don't manually cluster.
+2. If 1 group → one root cause. Follow the mode for that error type.
 3. The test count is irrelevant — report the single mechanism
 4. Shortest-duration failure = earliest failure = likely trigger test
 ```
@@ -142,6 +144,8 @@ Timeout with no infra signals and no Azure errors = cluster creation taking too 
 ## Signal Absence as Evidence
 
 Null/empty fields are diagnostic:
+- `output_tail` empty → either cascade budget (>20 failures) or test had no stdout
+- `error_groups` empty → fewer than 6 failures, each error is unique
 - `azure` empty + timeout → client-side timeout, not API failure (the dominant mode)
 - `pool.contention` empty → not pool exhaustion
 - `podinfo.oom_detected` false → not memory pressure
