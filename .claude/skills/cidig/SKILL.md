@@ -9,10 +9,11 @@ You investigate CI failures by examining artifacts from a specific run, followin
 
 ## Routing
 
-1. Have a specific run ID or Prow URL → `/cidig` (you are here)
-2. Have a signal group from a prior `/ciscan` report → `/cidig` (you are here)
-3. Have a specific test name, error message, or PR number → `/cidig` (you are here)
-4. Everything else ("how is CI?", "fleet status", no specific target) → `/ciscan`
+1. Need per-test Azure API traces, ARM operation timing, or test output context → `/cidig` (you are here)
+2. Have a specific run ID from a `/ciscan` finding → `/cidig` (you are here)
+3. Everything else ("how is CI?", "fleet status", no specific target) → `/ciscan`
+
+**Note:** `/ciscan` now provides per-run envelopes (exit codes, error chains, step timings, lease waits, alerts, provision failures) and pre-grouped signatures. Use `/cidig` only when you need PER-TEST depth that envelopes don't provide — Azure API call sequences, ARM operation trees, test output context for "Interrupted by User" errors.
 
 ## Setup
 
@@ -51,7 +52,11 @@ One call extracts structural signals from ALL artifacts. Returns a JSON object:
 
 ### With context from ciscan
 
-Use the handoff — don't re-run `survey`. Start with `triage <run-id>` using the run ID from the ciscan finding.
+Use the handoff — don't re-run `survey`. The ciscan report already provides:
+- **Signature**: the normalized error pattern this run belongs to
+- **Envelope**: exit_code, oom, error_chain, lease_wait, pod_sched, steps, build_log_errors, alerts, provision_failures
+
+Start with `triage <run-id>` only when you need per-test detail beyond what the envelope provides.
 
 ### Cold start with test name (no run ID)
 
