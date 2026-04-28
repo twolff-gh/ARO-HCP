@@ -291,7 +291,6 @@ Severity: <30% = Critical, 30-60% = Warning, >60% = OK
 - Prefix test names with `[PROD]`, `[STG]`, `[INT]`, or `[PRESUBMIT]`.
 - If ev2_onsets detected a hash transition, cite it in the finding's deploy correlation.
 
-**Optional HTML report:** If the user asks for HTML, the template is at `tooling/arohcp-ci-triage/report-template.html`. Inject data with: `python3 -c "import json; d=json.dumps(json.load(open('/tmp/ciscan-data.json')),ensure_ascii=False); t=open('tooling/arohcp-ci-triage/report-template.html').read(); open('/tmp/ciscan-report.html','w').write(t.replace('const DATA = null;','const DATA = '+d+';'))"`
 
 ## Error Handling
 
