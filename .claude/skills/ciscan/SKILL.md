@@ -216,18 +216,30 @@ Write the full report directly in the conversation as markdown. This IS the deli
 
 ## Fleet Status
 
-| Env | Pass Rate | Runs | Severity | Detail |
+| Env | Pass Rate | Runs | Trend | Severity |
 |---|---|---|---|---|
-| INT | 72.7% | 11 | OK | 2d actual (truncated). 3 signatures. |
-| STG | 55.6% | 9 | Warning | 5d. 1 cascade run. |
-| PROD | 18.2% | 11 | Critical | 4d. All hashes failing. |
-| Presubmit | 28.4% | 335 | Critical | 104 provision failures. 133 with >100s pod sched. |
+| INT | 72.7% | 11 | `▇▇▅▇▇▇▅▇` | OK |
+| STG | 55.6% | 9 | `▇▃▅▁▇▇` | Warning |
+| PROD | 18.2% | 11 | `▁▁▁▅` | Critical |
+| Presubmit | 28.4% | 335 | `▃▃▁▅▅▁` | Critical |
 
+Sparkline: one bar per day from daily_rates. Height = pass%. ▁<20% ▃20-50% ▅50-80% ▇>80%
 Severity: <30% = Critical, 30-60% = Warning, >60% = OK
+
+<details>
+<summary>All failed runs (N)</summary>
+
+| Env | Run | Time | Hash | Failures | Prow |
+|---|---|---|---|---|---|
+| PROD | 2048175228365836288 | 04/24 18:17 | a16d7bc6c464 | 29 | [link](url) |
+| PROD | 2048537620723535872 | 04/25 01:00 | a16d7bc6c464 | 38 | [link](url) |
+| ... | | | | | |
+
+</details>
 
 ## Findings
 
-### P1 — [Title] [ENV tags]
+### P1 — [Title] `[ENV]` `[ENV]`
 
 **Error:** `normalized error signature`
 
@@ -238,33 +250,50 @@ Severity: <30% = Critical, 30-60% = Warning, >60% = OK
 | Cross-env | envs and hit counts |
 | Deploy correlated | Yes/No — cite ev2_onsets or ev2_hash_rates |
 
-**Envelope evidence:**
-- [envelope:exit_code] All N runs: 1 — test failure, not crash
-- [envelope:oom] All runs: false
-- [envelope:lease_wait_s] max Xs — no contention
-- [envelope:error_chain] "chain text..."
+**Evidence chain:**
+1. [signatures:key] "failed to create cluster {NAME}..." — 297x across 32 tests
+2. [envelope:exit_code] All 9 PROD runs: 1 — test failure, not OOM or crash
+3. [envelope:oom] false on all runs
+4. [envelope:lease_wait_s] max 1.1s — no Boskos contention
+5. [envelope:pod_sched_s] 0s on all periodic — no scheduling pressure
+6. [envelope:error_chain] "prod-e2e-parallel test steps failed: ContainerFailed exit code 1"
+7. [ev2_hash_rates] a16d7bc6c464=25%, 5276b688af51=0%, 3e5c4d579c24=0% — all hashes fail
+8. [cross_env_signatures] same key in STG (145x) + PROD (152x)
 
 **Hypothesis:** [what's happening and why]
 
 **Action:** [what to do next]
 
 <details>
-<summary>Affected tests (N)</summary>
+<summary>Affected tests (N) — sorted by count</summary>
 
-| Count | Test | Error |
-|---|---|---|
-| 11x | [PROD] test name | error summary |
-| 9x | [STG] test name | error summary |
+| Count | Env | Test | Error |
+|---|---|---|---|
+| 11x | PROD | no-CNI private cluster with private key vault and cilium CNI | 45-min timeout |
+| 10x | PROD | custom node pool osDisk size | 45-min timeout |
+| 7x | STG | custom node pool osDisk size | 45-min timeout |
+| ... | | | |
 
 </details>
 
 <details>
-<summary>Deploy timeline</summary>
+<summary>Deploy timeline — PROD</summary>
 
 | Time | Hash | Result | Detail |
 |---|---|---|---|
-| 04/23 00:08 | 3e5c4d579c24 | FAIL | 9 failures |
-| 04/23 23:08 | 5276b688af51 | FAIL | 7 failures (new deploy) |
+| 04/23 00:08 | `3e5c4d579c24` | FAIL | 9 failures |
+| 04/23 23:08 | `5276b688af51` | FAIL | 7 failures — **new deploy** |
+| 04/24 18:17 | `a16d7bc6c464` | FAIL | 29 failures — **new deploy** |
+
+</details>
+
+<details>
+<summary>Top runs for this finding</summary>
+
+| Run | Env | Failures | Prow |
+|---|---|---|---|
+| 2048175228365836288 | PROD | 34 | [link](prow_url) |
+| 2048537620723535872 | STG | 37 | [link](prow_url) |
 
 </details>
 
@@ -272,10 +301,10 @@ Severity: <30% = Critical, 30-60% = Warning, >60% = OK
 
 ## Nightly
 
-| Env | Pass Rate | Runs | Detail |
-|---|---|---|---|
-| INT | 0% | 2 | All cascade. Same timeout as periodic. |
-| PROD | 0% | 5 | All cascade. Candidate OCP. |
+| Env | Pass Rate | Runs | Trend | Detail |
+|---|---|---|---|---|
+| INT | 0% | 2 | `▁▁` | All cascade. Same timeout as periodic. |
+| PROD | 0% | 5 | `▁▁▁▁` | All cascade. Candidate OCP. |
 
 ## Coverage Gaps
 
@@ -284,12 +313,14 @@ Severity: <30% = Critical, 30-60% = Warning, >60% = OK
 ```
 
 **Rules:**
-- Every failure must appear in a finding. Cluster by signature, list ALL tests.
-- Evidence from envelopes is REQUIRED for each finding.
-- Deploy timeline: one row per run in timestamp order. Mark hash transitions.
-- Use `<details>` for affected tests and deploy timelines — keeps the report scannable.
-- Prefix test names with `[PROD]`, `[STG]`, `[INT]`, or `[PRESUBMIT]`.
-- If ev2_onsets detected a hash transition, cite it in the finding's deploy correlation.
+- **Sparklines:** Build from `daily_rates`. One char per day. `▁` <20%, `▃` 20-50%, `▅` 50-80%, `▇` >80%.
+- **All runs table:** List EVERY failed run with env, run ID, timestamp, EV2 hash, failure count, and Prow link. Prow URL is in `runs[].url`.
+- **Evidence chain:** Numbered list. Each item cites the source field and quotes the value. The LLM reasoning that connects the evidence to the finding is in the hypothesis, NOT in the evidence chain. Evidence = facts. Hypothesis = interpretation.
+- **Top runs:** For each finding, list the 2-3 runs with the most failures for that signature. Include Prow links from `best_run_url` or `runs[].url`.
+- **Affected tests:** EVERY test in the signature, sorted by count. Include env tag, test name, and error summary.
+- Every failure must appear in a finding. Cluster by signature.
+- Deploy timeline: one row per run in timestamp order. Bold hash transitions.
+- If ev2_onsets detected a hash transition, cite it in the evidence chain.
 
 
 ## Error Handling
