@@ -30,7 +30,7 @@ func main() {
 }
 
 func printUsage() {
-	fmt.Fprint(os.Stderr, `citriage — CI signal extractor (JSON output)
+	fmt.Fprint(os.Stderr, `arohcp-ci-triage — CI signal extractor (JSON output)
 
 Commands:
   survey [flags]                     Fleet health and failure landscape

@@ -111,7 +111,7 @@ Custom tools in `tooling/`:
 - `templatize` - Pipeline template processing
 - `secret-sync` - Secret management utilities
 - `prometheus-rules` - Monitoring rule generation
-- `citriage` — CI fleet triage tool. 3 commands: `survey` (fleet health — per-run envelopes from GCS artifacts, error signatures via normalization, cross-env correlation), `triage RUN` (single-run deep extraction — per-test failures, step timings, all infra signals, neighbor context), `dig RUN WHAT` (per-test artifact drill-down: `tests`, `azure`, `metrics`, `podinfo`, `events`, `provision`, `alerts`, `pool`, `steptime`, `links`). Code does structural extraction and grouping; LLM does analysis. Powers `/cidig` and `/ciscan` skills. Zero external deps. Build: `go build -o /tmp/citriage ./tooling/citriage/`. All output is JSON.
+- `arohcp-ci-triage` — CI fleet triage tool. 3 commands: `survey` (fleet health — per-run envelopes from GCS artifacts, error signatures via normalization, cross-env correlation), `triage RUN` (single-run deep extraction — per-test failures, step timings, all infra signals, neighbor context), `dig RUN WHAT` (per-test artifact drill-down: `tests`, `azure`, `metrics`, `podinfo`, `events`, `provision`, `alerts`, `pool`, `steptime`, `links`). Code does structural extraction and grouping; LLM does analysis. Powers `/cidig` and `/ciscan` skills. Zero external deps. Build: `go build -o /tmp/arohcp-ci-triage ./tooling/arohcp-ci-triage/`. All output is JSON.
 
 ## Documentation
 

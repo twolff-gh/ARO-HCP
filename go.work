@@ -10,7 +10,7 @@ use (
 	./test
 	./test-integration
 	./tooling/aro-hcp-exporter
-	./tooling/citriage
+	./tooling/arohcp-ci-triage
 	./tooling/grafanactl
 	./tooling/hcpctl
 	./tooling/helmtest

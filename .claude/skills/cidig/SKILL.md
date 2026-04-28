@@ -18,7 +18,7 @@ You investigate CI failures by examining artifacts from a specific run, followin
 ## Setup
 
 ```bash
-go build -o /tmp/citriage ./tooling/citriage/
+go build -o /tmp/arohcp-ci-triage ./tooling/arohcp-ci-triage/
 ```
 
 All output is JSON.
@@ -28,7 +28,7 @@ All output is JSON.
 ### Primary entry: `triage` (always start here)
 
 ```bash
-/tmp/citriage triage <run-id> [--context-days=3] [--baseline=<passing-run-id>]
+/tmp/arohcp-ci-triage triage <run-id> [--context-days=3] [--baseline=<passing-run-id>]
 ```
 
 One call extracts structural signals from ALL artifacts. Returns a JSON object:

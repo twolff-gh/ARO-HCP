@@ -36,7 +36,7 @@ func newGCS() *gcs {
 	if err != nil {
 		dir = os.TempDir()
 	}
-	dir = filepath.Join(dir, "citriage")
+	dir = filepath.Join(dir, "arohcp-ci-triage")
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: cache dir %s: %v\n", dir, err)
 	}

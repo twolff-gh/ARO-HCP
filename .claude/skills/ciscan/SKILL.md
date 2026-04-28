@@ -35,7 +35,7 @@ If the user doesn't specify a scope, ask: "Periodic (production health) or presu
 ## Setup
 
 ```bash
-go build -o /tmp/citriage ./tooling/citriage/
+go build -o /tmp/arohcp-ci-triage ./tooling/arohcp-ci-triage/
 ```
 
 All output is JSON. GCS artifacts are cached locally — first scan fetches from remote, repeat scans are sub-second.
@@ -46,15 +46,15 @@ All output is JSON. GCS artifacts are cached locally — first scan fetches from
 
 **periodic scope:**
 ```bash
-/tmp/citriage survey --env=all --days=7
-/tmp/citriage survey --env=int --job=nightly --days=7
-/tmp/citriage survey --env=prod --job=nightly --days=7
+/tmp/arohcp-ci-triage survey --env=all --days=7
+/tmp/arohcp-ci-triage survey --env=int --job=nightly --days=7
+/tmp/arohcp-ci-triage survey --env=prod --job=nightly --days=7
 ```
 Run all three in parallel.
 
 **presubmit scope:**
 ```bash
-/tmp/citriage survey --env=dev --days=5
+/tmp/arohcp-ci-triage survey --env=dev --days=5
 ```
 
 **all scope:** Run periodic, nightly, and presubmit surveys in parallel.
@@ -207,11 +207,11 @@ Patterns that span run types reveal root cause layer:
 
 ### Step 7: Publish HTML report
 
-**Template:** `tooling/citriage/report-template.html`. Do NOT read or copy the template — just write the DATA JSON and run the injection command.
+**Template:** `tooling/arohcp-ci-triage/report-template.html`. Do NOT read or copy the template — just write the DATA JSON and run the injection command.
 
 **How:**
 1. Write DATA object (JSON) to `/tmp/ciscan-data.json`
-2. Inject into template: `python3 -c "import json; d=json.dumps(json.load(open('/tmp/ciscan-data.json')),ensure_ascii=False); t=open('tooling/citriage/report-template.html').read(); open('/tmp/ciscan-report.html','w').write(t.replace('const DATA = null;','const DATA = '+d+';'))"` (do NOT use sed — it mangles unicode escapes)
+2. Inject into template: `python3 -c "import json; d=json.dumps(json.load(open('/tmp/ciscan-data.json')),ensure_ascii=False); t=open('tooling/arohcp-ci-triage/report-template.html').read(); open('/tmp/ciscan-report.html','w').write(t.replace('const DATA = null;','const DATA = '+d+';'))"` (do NOT use sed — it mangles unicode escapes)
 3. Open with `xdg-open /tmp/ciscan-report.html`
 
 **DATA shape:**
