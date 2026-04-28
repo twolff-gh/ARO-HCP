@@ -20,7 +20,7 @@ const (
 	moderateFailureCeiling = 15
 	neighborRunsLimit        = 100
 	maxFailuresWithOutputs   = 20
-	maxEnrichmentRuns        = 20
+	maxEnrichmentRuns        = 50
 )
 
 func runSurvey(args []string) error {
@@ -45,6 +45,7 @@ type surveyData struct {
 	requestedDays       int
 	nightlyRunsExcluded int
 	runCountCapped      bool
+	stratified          bool
 }
 
 // --- JSON output types ---
@@ -61,6 +62,19 @@ type surveyJSON struct {
 	RegionRates      []regionRateJSON      `json:"region_rates,omitempty"`
 	Runs             []runJSON             `json:"runs"`
 	Failures         []failureJSON         `json:"failures"`
+	Signatures       []signatureJSON       `json:"signatures,omitempty"`
+}
+
+type signatureJSON struct {
+	Key                 string   `json:"key"`
+	HitCount            int      `json:"hit_count"`
+	TestCount           int      `json:"test_count"`
+	Tests               []string `json:"tests"`
+	FirstFailure        string   `json:"first_failure,omitempty"`
+	LastFailure         string   `json:"last_failure,omitempty"`
+	BestRunID           int64    `json:"best_run_id"`
+	BestRunURL          string   `json:"best_run_url,omitempty"`
+	RepresentativeError string   `json:"representative_error,omitempty"`
 }
 
 type dataWindowJSON struct {
@@ -71,6 +85,7 @@ type dataWindowJSON struct {
 	Truncated           bool   `json:"truncated"`
 	NightlyRunsExcluded int    `json:"nightly_runs_excluded,omitempty"`
 	RunCountCapped      bool   `json:"run_count_capped,omitempty"`
+	Stratified          bool   `json:"stratified,omitempty"`
 	Empty               bool   `json:"empty,omitempty"`
 	EmptyReason         string `json:"empty_reason,omitempty"`
 }
@@ -112,7 +127,8 @@ type runJSON struct {
 	Cluster      string `json:"cluster,omitempty"`
 	PullNumber   int    `json:"pull_number,omitempty"`
 	SHA          string `json:"sha,omitempty"`
-	URL          string `json:"url"`
+	URL          string       `json:"url"`
+	Envelope     *RunEnvelope `json:"envelope,omitempty"`
 }
 
 type failureJSON struct {
@@ -161,9 +177,17 @@ type crossEnvJSON struct {
 	Environments []crossEnvEntryJSON `json:"environments"`
 }
 
+type crossEnvSignatureJSON struct {
+	Key          string              `json:"key"`
+	EnvCount     int                 `json:"env_count"`
+	TotalHits    int                 `json:"total_hits"`
+	Environments []crossEnvEntryJSON `json:"environments"`
+}
+
 type surveyAllJSON struct {
-	Environments     []surveyJSON   `json:"environments"`
-	CrossEnvFailures []crossEnvJSON `json:"cross_env_failures"`
+	Environments       []surveyJSON            `json:"environments"`
+	CrossEnvFailures   []crossEnvJSON          `json:"cross_env_failures"`
+	CrossEnvSignatures []crossEnvSignatureJSON `json:"cross_env_signatures,omitempty"`
 }
 
 // --- Data fetching ---
@@ -188,6 +212,10 @@ func fetchSurveyData(s *sippy, env string, days int, jobPat, testPat string) (*s
 		runs, nightlyExcluded = filterNightlyRuns(runs)
 	}
 	runs = filterRunsByDate(runs, time.Now().Add(-time.Duration(days)*24*time.Hour))
+	stratified := false
+	if runCountCapped {
+		runs, stratified = stratifyRuns(runs, days)
+	}
 
 	period := fmt.Sprintf("%dh", days*24)
 	failures, err := s.recentFailures(release, period)
@@ -198,9 +226,12 @@ func fetchSurveyData(s *sippy, env string, days int, jobPat, testPat string) (*s
 		failures = failuresFromRuns(runs)
 	}
 	failures = filterFailuresToRuns(failures, runs)
+	supplementMissingOutputs(failures, runs)
 	enrichMissingErrors(failures, runs)
 	enrichPipelineStepErrors(s, failures, runs)
+	enrichPipelineStepErrorsGCS(failures, runs)
 	extractPipelineStepErrors(failures)
+	markEmptyErrors(failures)
 	enrichLastPass(failures, runs)
 
 	if testPat != "" {
@@ -220,6 +251,7 @@ func fetchSurveyData(s *sippy, env string, days int, jobPat, testPat string) (*s
 		requestedDays:       days,
 		nightlyRunsExcluded: nightlyExcluded,
 		runCountCapped:      runCountCapped,
+		stratified:          stratified,
 	}, nil
 }
 
@@ -249,19 +281,91 @@ func buildSurveyJSON(env string, data *surveyData) surveyJSON {
 		}
 	}
 
-	result.DataWindow = buildDataWindow(data.runs, data.requestedDays, data.nightlyRunsExcluded, data.runCountCapped)
+	result.DataWindow = buildDataWindow(data.runs, data.requestedDays, data.nightlyRunsExcluded, data.runCountCapped, data.stratified)
 	result.DailyRates = buildDailyRates(data.runs)
 	result.EV2Coverage = buildEV2Coverage(data.runs)
 	result.EV2HashRates = buildEV2HashRates(data.runs)
 	result.FailureScaleDist = buildFailureScaleDist(data.runs)
 	result.RegionRates = buildRegionRates(data.runs)
 	result.Runs = buildRunsJSON(data.runs)
+	enrichRunEnvelopes(result.Runs, data.runs)
+	backfillErrorsFromEnvelopes(data.failures, result.Runs)
 	result.Failures = buildFailuresJSON(data.failures, data.runs)
+	result.Signatures = buildSignatures(result.Failures)
 
 	return result
 }
 
-func buildDataWindow(runs []JobRun, requestedDays, nightlyExcluded int, runCountCapped bool) *dataWindowJSON {
+func backfillErrorsFromEnvelopes(failures []RecentFailure, runs []runJSON) {
+	chainByRun := map[int64]string{}
+	for _, r := range runs {
+		if r.Envelope != nil && r.Envelope.ErrorChain != "" {
+			chainByRun[r.ID] = r.Envelope.ErrorChain
+		}
+	}
+	for i := range failures {
+		allEmpty := true
+		for _, out := range failures[i].Outputs {
+			if out.Output != "" && out.Output != emptyErrorSentinel {
+				allEmpty = false
+				break
+			}
+		}
+		if !allEmpty || len(failures[i].Outputs) == 0 {
+			continue
+		}
+		for j := range failures[i].Outputs {
+			if chain, ok := chainByRun[failures[i].Outputs[j].RunID]; ok {
+				failures[i].Outputs[j].Output = chain
+				break
+			}
+		}
+	}
+}
+
+func enrichRunEnvelopes(runs []runJSON, allRuns []JobRun) {
+	if len(runs) == 0 {
+		return
+	}
+	store := newGCS()
+	runByID := map[int64]JobRun{}
+	for _, r := range allRuns {
+		runByID[r.ID] = r
+	}
+
+	type envResult struct {
+		idx      int
+		envelope *RunEnvelope
+	}
+	ch := make(chan envResult, len(runs))
+
+	for i, r := range runs {
+		jr, ok := runByID[r.ID]
+		if !ok {
+			ch <- envResult{i, nil}
+			continue
+		}
+		base := gcsBase(jr.URL)
+		if base == "" {
+			ch <- envResult{i, nil}
+			continue
+		}
+		go func(idx int, b string, jr JobRun) {
+			step, _ := stepContainer(jr.Job)
+			isPresubmit := strings.Contains(jr.Job, "pull-ci-")
+			ch <- envResult{idx, buildRunEnvelope(store, b, step, isPresubmit)}
+		}(i, base, jr)
+	}
+
+	for range runs {
+		r := <-ch
+		if r.envelope != nil {
+			runs[r.idx].Envelope = r.envelope
+		}
+	}
+}
+
+func buildDataWindow(runs []JobRun, requestedDays, nightlyExcluded int, runCountCapped, stratified bool) *dataWindowJSON {
 	if requestedDays == 0 {
 		return nil
 	}
@@ -270,6 +374,7 @@ func buildDataWindow(runs []JobRun, requestedDays, nightlyExcluded int, runCount
 			RequestedDays:       requestedDays,
 			NightlyRunsExcluded: nightlyExcluded,
 			RunCountCapped:      runCountCapped,
+			Stratified:          stratified,
 			Empty:               true,
 			EmptyReason:         "no runs matched the job filter within the requested time window",
 		}
@@ -293,6 +398,7 @@ func buildDataWindow(runs []JobRun, requestedDays, nightlyExcluded int, runCount
 		Truncated:           truncated,
 		NightlyRunsExcluded: nightlyExcluded,
 		RunCountCapped:      runCountCapped,
+		Stratified:          stratified,
 	}
 }
 
@@ -486,10 +592,114 @@ func buildFailuresJSON(failures []RecentFailure, runs []JobRun) []failureJSON {
 	slices.SortFunc(result, func(a, b failureJSON) int {
 		return cmp.Compare(b.FailureCount, a.FailureCount)
 	})
-	for i := maxFailuresWithOutputs; i < len(result); i++ {
-		result[i].Outputs = nil
+	seen := map[string]bool{}
+	unique := 0
+	for i := range result {
+		sig := errorSignature(result[i].Outputs)
+		if sig != "" && seen[sig] {
+			continue
+		}
+		unique++
+		if unique > maxFailuresWithOutputs {
+			for j := i; j < len(result); j++ {
+				jSig := errorSignature(result[j].Outputs)
+				if jSig == "" || !seen[jSig] {
+					result[j].Outputs = nil
+				}
+			}
+			break
+		}
+		if sig != "" {
+			seen[sig] = true
+		}
 	}
 	return result
+}
+
+func buildSignatures(failures []failureJSON) []signatureJSON {
+	type sigGroup struct {
+		key             string
+		hitCount        int
+		tests           []string
+		firstFailure    string
+		lastFailure     string
+		bestRunID       int64
+		bestRunURL      string
+		representativeError string
+	}
+
+	groups := map[string]*sigGroup{}
+	var order []string
+	for _, f := range failures {
+		errText := ""
+		for _, o := range f.Outputs {
+			if o.ExtractedErrors != "" {
+				errText = o.ExtractedErrors
+				break
+			}
+			if o.Error != "" && o.Error != emptyErrorSentinel {
+				errText = o.Error
+				break
+			}
+		}
+		key := "(no error text)"
+		if errText != "" {
+			key = normalizeError(errText)
+		}
+		g, exists := groups[key]
+		if !exists {
+			g = &sigGroup{
+				key:                 key,
+				firstFailure:        f.FirstFailure,
+				lastFailure:         f.LastFailure,
+				bestRunID:           f.BestRunID,
+				bestRunURL:          f.BestRunURL,
+				representativeError: errText,
+			}
+			groups[key] = g
+			order = append(order, key)
+		}
+		g.hitCount += f.FailureCount
+		g.tests = append(g.tests, f.TestName)
+		if f.FirstFailure < g.firstFailure {
+			g.firstFailure = f.FirstFailure
+		}
+		if f.LastFailure > g.lastFailure {
+			g.lastFailure = f.LastFailure
+		}
+	}
+
+	var result []signatureJSON
+	for _, key := range order {
+		g := groups[key]
+		result = append(result, signatureJSON{
+			Key:                 g.key,
+			HitCount:            g.hitCount,
+			TestCount:           len(g.tests),
+			Tests:               g.tests,
+			FirstFailure:        g.firstFailure,
+			LastFailure:         g.lastFailure,
+			BestRunID:           g.bestRunID,
+			BestRunURL:          g.bestRunURL,
+			RepresentativeError: g.representativeError,
+		})
+	}
+	slices.SortFunc(result, func(a, b signatureJSON) int {
+		return cmp.Compare(b.HitCount, a.HitCount)
+	})
+	return result
+}
+
+func errorSignature(outputs []failureOutputJSON) string {
+	for _, o := range outputs {
+		if o.ExtractedErrors != "" {
+			return normalizeError(o.ExtractedErrors)
+		}
+		if o.Error != "" && o.Error != emptyErrorSentinel {
+			return normalizeError(o.Error)
+		}
+	}
+	return ""
 }
 
 // --- Dispatch ---
@@ -575,15 +785,96 @@ func surveyAll(s *sippy, days int, jobPat, testPat string) error {
 		return cmp.Compare(a.TestName, b.TestName)
 	})
 
+	sigEnvEntries := map[string][]crossEnvEntryJSON{}
+	for _, e := range envs {
+		r, ok := results[e]
+		if !ok {
+			continue
+		}
+		for _, sig := range r.survey.Signatures {
+			sigEnvEntries[sig.Key] = append(sigEnvEntries[sig.Key], crossEnvEntryJSON{
+				Env:   e,
+				Hits:  sig.HitCount,
+				RunID: sig.BestRunID,
+			})
+		}
+	}
+	var crossEnvSigs []crossEnvSignatureJSON
+	for key, entries := range sigEnvEntries {
+		if len(entries) < 2 {
+			continue
+		}
+		total := 0
+		for _, e := range entries {
+			total += e.Hits
+		}
+		crossEnvSigs = append(crossEnvSigs, crossEnvSignatureJSON{
+			Key:          key,
+			EnvCount:     len(entries),
+			TotalHits:    total,
+			Environments: entries,
+		})
+	}
+	slices.SortFunc(crossEnvSigs, func(a, b crossEnvSignatureJSON) int {
+		if c := cmp.Compare(b.TotalHits, a.TotalHits); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.Key, b.Key)
+	})
+
 	result := surveyAllJSON{
-		Environments:     envResults,
-		CrossEnvFailures: crossEnv,
+		Environments:       envResults,
+		CrossEnvFailures:   crossEnv,
+		CrossEnvSignatures: crossEnvSigs,
 	}
 
 	return json.NewEncoder(os.Stdout).Encode(result)
 }
 
 // --- Data helpers ---
+
+func stratifyRuns(runs []JobRun, days int) ([]JobRun, bool) {
+	if len(runs) == 0 || days <= 0 {
+		return runs, false
+	}
+	maxPerDay := maxRunsFetch / days
+
+	byDate := map[string][]JobRun{}
+	for _, r := range runs {
+		date := time.UnixMilli(r.Timestamp).UTC().Format("2006-01-02")
+		byDate[date] = append(byDate[date], r)
+	}
+
+	needsStratification := false
+	for _, dayRuns := range byDate {
+		if len(dayRuns) > maxPerDay {
+			needsStratification = true
+			break
+		}
+	}
+	if !needsStratification {
+		return runs, false
+	}
+
+	var result []JobRun
+	for _, date := range slices.Sorted(maps.Keys(byDate)) {
+		dayRuns := byDate[date]
+		if len(dayRuns) <= maxPerDay {
+			result = append(result, dayRuns...)
+			continue
+		}
+		step := float64(len(dayRuns)) / float64(maxPerDay)
+		for i := range maxPerDay {
+			idx := int(float64(i) * step)
+			result = append(result, dayRuns[idx])
+		}
+	}
+
+	slices.SortFunc(result, func(a, b JobRun) int {
+		return cmp.Compare(b.Timestamp, a.Timestamp)
+	})
+	return result, true
+}
 
 func filterRunsByDate(runs []JobRun, cutoff time.Time) []JobRun {
 	cutoffMillis := cutoff.UnixMilli()
@@ -664,7 +955,13 @@ func realFailureCount(r JobRun) int {
 
 // --- Pipeline step error extraction ---
 
-var logEntryStartRe = regexp.MustCompile(`time=\d{4}-\d{2}-\d{2}T`)
+var (
+	logEntryStartRe = regexp.MustCompile(`time=\d{4}-\d{2}-\d{2}T`)
+	armCodeRe       = regexp.MustCompile(`"code"\s*:\s*"([^"]+)"`)
+	armMessageRe    = regexp.MustCompile(`"message"\s*:\s*"([^"]*)"`)
+	httpResponseRe  = regexp.MustCompile(`(?m)RESPONSE (\d+):.*\n\s*ERROR CODE:\s*(.+)`)
+	errFieldRe      = regexp.MustCompile(`err="([^"]+)"`)
+)
 
 func extractPipelineStepErrors(failures []RecentFailure) {
 	for i := range failures {
@@ -683,9 +980,33 @@ func extractPipelineStepErrors(failures []RecentFailure) {
 }
 
 func extractStepError(output string) string {
+	extracted, hasStructuredLogs := extractStructuredLogErrors(output)
+	if extracted != "" {
+		return extracted
+	}
+	if hasStructuredLogs {
+		return ""
+	}
+	if extracted := extractARMError(output); extracted != "" {
+		return extracted
+	}
+	if extracted := extractHTTPResponseError(output); extracted != "" {
+		return extracted
+	}
+	if extracted := extractErrField(output); extracted != "" {
+		return extracted
+	}
+	if len(output) > 0 {
+		start := max(0, len(output)-500)
+		return strings.TrimSpace(output[start:])
+	}
+	return ""
+}
+
+func extractStructuredLogErrors(output string) (string, bool) {
 	locs := logEntryStartRe.FindAllStringIndex(output, -1)
 	if len(locs) == 0 {
-		return ""
+		return "", false
 	}
 	var errors []string
 	for i, loc := range locs {
@@ -700,9 +1021,62 @@ func extractStepError(output string) string {
 		}
 	}
 	if len(errors) == 0 {
+		return "", true
+	}
+	return strings.Join(errors, "\n"), true
+}
+
+func extractARMError(output string) string {
+	codes := armCodeRe.FindAllStringSubmatch(output, -1)
+	messages := armMessageRe.FindAllStringSubmatch(output, -1)
+	if len(codes) == 0 {
 		return ""
 	}
-	return strings.Join(errors, "\n")
+	var results []string
+	for i, c := range codes {
+		code := c[1]
+		if len(code) < 3 {
+			continue
+		}
+		msg := ""
+		if i < len(messages) {
+			msg = messages[i][1]
+		}
+		if msg != "" {
+			results = append(results, code+": "+msg)
+		} else {
+			results = append(results, code)
+		}
+	}
+	if len(results) == 0 {
+		return ""
+	}
+	return strings.Join(results, "\n")
+}
+
+func extractHTTPResponseError(output string) string {
+	matches := httpResponseRe.FindAllStringSubmatch(output, -1)
+	if len(matches) == 0 {
+		return ""
+	}
+	var results []string
+	for _, m := range matches {
+		code := strings.TrimSpace(m[2])
+		results = append(results, "HTTP "+m[1]+": "+code)
+	}
+	return strings.Join(results, "\n")
+}
+
+func extractErrField(output string) string {
+	matches := errFieldRe.FindAllStringSubmatch(output, -1)
+	if len(matches) == 0 {
+		return ""
+	}
+	last := matches[len(matches)-1][1]
+	if len(last) > 500 {
+		last = last[:500]
+	}
+	return last
 }
 
 // --- Error enrichment ---
@@ -880,6 +1254,127 @@ func enrichPipelineStepErrors(s *sippy, failures []RecentFailure, _ []JobRun) {
 	}
 }
 
+func enrichPipelineStepErrorsGCS(failures []RecentFailure, runs []JobRun) {
+	needRunIDs := map[int64]bool{}
+	for _, f := range failures {
+		if !strings.HasPrefix(f.TestName, "Run pipeline step ") {
+			continue
+		}
+		for _, out := range f.Outputs {
+			if out.Output == "" {
+				needRunIDs[out.RunID] = true
+			}
+		}
+	}
+	if len(needRunIDs) == 0 {
+		return
+	}
+
+	runByID := map[int64]JobRun{}
+	for _, r := range runs {
+		runByID[r.ID] = r
+	}
+	var targets []JobRun
+	for id := range needRunIDs {
+		if r, ok := runByID[id]; ok {
+			targets = append(targets, r)
+		}
+	}
+	if len(targets) > maxEnrichmentRuns {
+		targets = targets[:maxEnrichmentRuns]
+	}
+	if len(targets) == 0 {
+		return
+	}
+
+	store := newGCS()
+	type fetchResult struct {
+		runID  int64
+		errors map[string]string
+	}
+	ch := make(chan fetchResult, len(targets))
+	for _, r := range targets {
+		base := gcsBase(r.URL)
+		if base == "" {
+			ch <- fetchResult{r.ID, nil}
+			continue
+		}
+		go func(id int64, b, job string) {
+			step, _ := stepContainer(job)
+			relPath := "artifacts/" + step + "/aro-hcp-provision-environment/artifacts/junit_entrypoint.xml"
+			data, err := store.artifact(b, relPath)
+			if err != nil {
+				ch <- fetchResult{id, nil}
+				return
+			}
+			suites, err := parseJUnit(data)
+			if err != nil {
+				ch <- fetchResult{id, nil}
+				return
+			}
+			m := map[string]string{}
+			for _, suite := range suites.Suites {
+				for _, tc := range suite.Cases {
+					if f := tc.effectiveFailure(); f != nil {
+						msg := stripANSI(f.errorMessage())
+						if msg != "" {
+							m[tc.Name] = msg
+						}
+					}
+				}
+			}
+			ch <- fetchResult{id, m}
+		}(r.ID, base, r.Job)
+	}
+
+	errorsByRunAndStep := map[int64]map[string]string{}
+	for range targets {
+		r := <-ch
+		if r.errors != nil {
+			errorsByRunAndStep[r.runID] = r.errors
+		}
+	}
+
+	for i := range failures {
+		if !strings.HasPrefix(failures[i].TestName, "Run pipeline step ") {
+			continue
+		}
+		stepPath := strings.TrimPrefix(failures[i].TestName, "Run pipeline step ")
+		for j := range failures[i].Outputs {
+			if len(failures[i].Outputs[j].Output) > 500 {
+				continue
+			}
+			m, ok := errorsByRunAndStep[failures[i].Outputs[j].RunID]
+			if !ok {
+				continue
+			}
+			for tcName, errText := range m {
+				if strings.Contains(stepPath, tcName) || strings.Contains(tcName, stepPath) {
+					failures[i].Outputs[j].Output = errText
+					break
+				}
+			}
+		}
+	}
+}
+
+const emptyErrorSentinel = "(error text not available from Sippy or GCS artifacts)"
+
+func markEmptyErrors(failures []RecentFailure) {
+	for i := range failures {
+		allEmpty := true
+		for _, out := range failures[i].Outputs {
+			if out.Output != "" {
+				allEmpty = false
+				break
+			}
+		}
+		if allEmpty && len(failures[i].Outputs) > 0 {
+			failures[i].Outputs[0].Output = emptyErrorSentinel
+		}
+	}
+}
+
 func enrichLastPass(failures []RecentFailure, runs []JobRun) {
 	for i := range failures {
 		if failures[i].LastPass != "" {
@@ -901,6 +1396,24 @@ func enrichLastPass(failures []RecentFailure, runs []JobRun) {
 // filterFailuresToRuns keeps only failures whose outputs reference runs in our
 // job-filtered runs list. Sippy's recentFailures API for "Presubmits" returns
 // failures across ALL presubmit jobs; this scopes them to our specific jobs.
+func supplementMissingOutputs(failures []RecentFailure, runs []JobRun) {
+	testToRuns := map[string][]int64{}
+	for _, r := range runs {
+		for _, name := range r.FailedTestNames {
+			testToRuns[name] = append(testToRuns[name], r.ID)
+		}
+	}
+	for i := range failures {
+		if len(failures[i].Outputs) > 0 {
+			continue
+		}
+		runIDs := testToRuns[failures[i].TestName]
+		for _, id := range runIDs {
+			failures[i].Outputs = append(failures[i].Outputs, FailureOutput{RunID: id})
+		}
+	}
+}
+
 func filterFailuresToRuns(failures []RecentFailure, runs []JobRun) []RecentFailure {
 	runIDs := map[int64]bool{}
 	for _, r := range runs {

@@ -245,8 +245,39 @@ const DATA = null;
 function esc(s) {
   if (!s) return '';
   const d = document.createElement('div');
-  d.textContent = s;
+  d.textContent = String(s);
   return d.innerHTML;
+}
+
+function sparkColor(pct) { return pct < 30 ? 'red' : pct < 60 ? 'yellow' : 'green'; }
+
+function normalize(data) {
+  for (const c of (data.fleetCards || [])) {
+    if (c.sparkline) {
+      c.sparkline = c.sparkline.map(s =>
+        typeof s === 'number' ? {pct: s, color: sparkColor(s), date: ''} :
+        {pct: s.pct ?? 0, color: s.color ?? sparkColor(s.pct ?? 0), date: s.date ?? ''});
+    }
+    if (c.passRate == null) c.passRate = 0;
+  }
+  for (const f of (data.findings || [])) {
+    if (f.deployTimeline && f.deployTimeline.length && f.deployTimeline[0].ts) {
+      f.deployTimeline = [{env: '', rows: f.deployTimeline}];
+    }
+    if (f.affectedPRs) {
+      f.affectedPRs = f.affectedPRs.map(pr => ({
+        number: pr.number ?? pr.pr ?? 0,
+        url: pr.url ?? '',
+        hits: pr.hits ?? pr.runs ?? 0,
+        failRate: pr.failRate ?? 0,
+        annotation: pr.annotation ?? pr.note ?? ''
+      }));
+    }
+  }
+  for (const n of (data.nightly || [])) {
+    if (n.passRate == null) n.passRate = 0;
+  }
+  return data;
 }
 
 function render(data) {
@@ -254,6 +285,7 @@ function render(data) {
     document.getElementById('app').innerHTML = '<p style="color:var(--red)">No DATA provided. The /ciscan skill must inject report data above this script.</p>';
     return;
   }
+  data = normalize(data);
   document.title = data.title || 'CI Fleet Assessment';
   let html = '';
 
@@ -276,7 +308,7 @@ function render(data) {
         html += `<div class="spark-bar ${s.color}" style="height:${h}%" title="${esc(s.date)}: ${s.pct}%"></div>`;
       }
       html += '</div><div class="spark-labels">';
-      for (const s of c.sparkline) html += `<span>${esc(s.date.slice(-2))}</span>`;
+      for (const s of c.sparkline) html += `<span>${esc(s.date ? s.date.slice(-2) : '')}</span>`;
       html += '</div>';
     }
     html += '</div>';
@@ -326,7 +358,7 @@ function render(data) {
       if (f.deployTimeline && f.deployTimeline.length) {
         html += '<details><summary>Deploy Timeline</summary><div class="expand-content"><div class="deploy-timeline">';
         for (const envGroup of f.deployTimeline) {
-          html += `<div class="deploy-env-label">${esc(envGroup.env)}</div>`;
+          if (envGroup.env) html += `<div class="deploy-env-label">${esc(envGroup.env)}</div>`;
           for (const r of (envGroup.rows || [])) {
             const icon = r.pass ? 'pass' : 'fail';
             const sym = r.pass ? '+' : 'x';
@@ -345,14 +377,12 @@ function render(data) {
       // Affected PRs
       if (f.affectedPRs && f.affectedPRs.length) {
         html += '<details><summary>Affected PRs</summary><div class="expand-content">';
-        html += '<table class="pr-table"><tr><th>PR</th><th>Hits</th><th>Fail Rate</th><th>Note</th></tr>';
+        html += '<table class="pr-table"><tr><th>PR</th><th>Runs</th><th>Note</th></tr>';
         for (const pr of f.affectedPRs) {
-          const barClass = pr.failRate > 60 ? 'high' : pr.failRate > 30 ? 'med' : 'low';
           html += '<tr>';
-          html += `<td class="pr-num"><a href="${esc(pr.url)}">#${pr.number}</a></td>`;
+          html += pr.url ? `<td class="pr-num"><a href="${esc(pr.url)}">#${pr.number}</a></td>` : `<td class="pr-num">#${pr.number}</td>`;
           html += `<td>${pr.hits}</td>`;
-          html += `<td>${pr.failRate}%<div class="pr-bar-bg"><div class="pr-bar-fill ${barClass}" style="width:${pr.failRate}%"></div></div></td>`;
-          html += `<td style="color:var(--text-dim)">${esc(pr.annotation || '')}</td>`;
+          html += `<td style="color:var(--text-dim)">${esc(pr.annotation)}</td>`;
           html += '</tr>';
         }
         html += '</table></div></details>';
@@ -427,7 +457,9 @@ function setFilter(env) {
     n.classList.toggle('hidden', env !== 'all' && env !== 'nightly'));
 }
 
-render(DATA);
+try { render(DATA); } catch(e) {
+  document.getElementById('app').innerHTML = `<p style="color:var(--red)">Render error: ${e.message}</p><pre style="color:var(--text-muted);font-size:0.75rem;margin-top:1rem">${e.stack}</pre>`;
+}
 </script>
 
 </body>

@@ -428,10 +428,14 @@ func extractProvisionSummary(data []byte) *ProvisionSummary {
 			result.TotalSteps++
 			if f := tc.effectiveFailure(); f != nil {
 				result.FailedSteps++
+				msg := f.errorMessage()
+				if distilled := extractStepError(msg); distilled != "" {
+					msg = distilled
+				}
 				result.Failures = append(result.Failures, ProvisionFailure{
 					Name:    tc.Name,
 					TimeSec: tc.Time,
-					Message: f.errorMessage(),
+					Message: msg,
 				})
 			}
 		}
@@ -508,6 +512,75 @@ func extractAzureSummary(data []byte, testName string) *AzureTestSummary {
 		result.ResponseErrors[code]++
 	}
 	return result
+}
+
+// --- Run envelope ---
+
+// RunEnvelope holds structural signal extracted from GCS artifacts for a single CI run.
+type RunEnvelope struct {
+	ExitCode       int                `json:"exit_code"`
+	OOM            bool               `json:"oom"`
+	ErrorChain     string             `json:"error_chain,omitempty"`
+	LeaseWaitSec   float64            `json:"lease_wait_s"`
+	PodSchedSec    float64            `json:"pod_sched_s"`
+	Steps          []StepTiming       `json:"steps,omitempty"`
+	BuildLogErrors []string           `json:"build_log_errors,omitempty"`
+	BuildLogSteps  []string           `json:"build_log_steps,omitempty"`
+	Alerts         []AlertSummary     `json:"alerts,omitempty"`
+	ProvisionFails []ProvisionFailure `json:"provision_failures,omitempty"`
+}
+
+func buildRunEnvelope(store *gcs, base, step string, isPresubmit bool) *RunEnvelope {
+	env := &RunEnvelope{}
+
+	if data, err := store.artifact(base, "podinfo.json"); err == nil {
+		if ps := extractPodinfoSummary(data); ps != nil {
+			env.ExitCode = ps.ExitCode
+			env.OOM = ps.OOMDetected
+		}
+	}
+
+	if data, err := store.artifact(base, "artifacts/ci-operator-metrics.json"); err == nil {
+		if me := extractMetricsEvents(data); me != nil {
+			env.LeaseWaitSec = me.MaxLeaseAcqSec
+			env.PodSchedSec = me.MaxPodSchedSec
+			for _, ev := range me.Events {
+				if !ev.Success && ev.Cause != "" {
+					env.ErrorChain = ev.Cause
+					break
+				}
+			}
+		}
+	}
+
+	if data, err := store.artifact(base, "artifacts/ci-operator-step-graph.json"); err == nil {
+		env.Steps = extractStepTimings(data)
+		if jd, err := store.artifact(base, "artifacts/junit_operator.xml"); err == nil {
+			enrichStepsWithJUnit(env.Steps, jd)
+		}
+	}
+
+	if data, err := store.artifact(base, "build-log.txt"); err == nil {
+		if bl := extractBuildLog(data); bl != nil {
+			env.BuildLogErrors = bl.ErrorLines
+			env.BuildLogSteps = bl.StepLines
+		}
+	}
+
+	if isPresubmit {
+		alertPath := "artifacts/" + step + "/aro-hcp-gather-observability/artifacts/alerts.json"
+		if data, err := store.artifact(base, alertPath); err == nil {
+			env.Alerts = extractAlertsSummary(data)
+		}
+		provPath := "artifacts/" + step + "/aro-hcp-provision-environment/artifacts/junit_entrypoint.xml"
+		if data, err := store.artifact(base, provPath); err == nil {
+			if ps := extractProvisionSummary(data); ps != nil {
+				env.ProvisionFails = ps.Failures
+			}
+		}
+	}
+
+	return env
 }
 
 // --- Utility ---

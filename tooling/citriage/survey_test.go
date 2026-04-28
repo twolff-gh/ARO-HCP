@@ -304,27 +304,87 @@ func TestBuildFailuresJSON(t *testing.T) {
 }
 
 func TestBuildFailuresJSON_OutputCapping(t *testing.T) {
-	var failures []RecentFailure
-	for i := 0; i < 25; i++ {
-		failures = append(failures, RecentFailure{
-			TestName:     fmt.Sprintf("test-%d", i),
-			FailureCount: 25 - i,
-			Outputs:      []FailureOutput{{RunID: int64(i + 1), Output: "some error"}},
-		})
-	}
-	result := buildFailuresJSON(failures, nil)
+	t.Run("same error deduplicates to one slot", func(t *testing.T) {
+		var failures []RecentFailure
+		for i := 0; i < 25; i++ {
+			failures = append(failures, RecentFailure{
+				TestName:     fmt.Sprintf("test-%d", i),
+				FailureCount: 25 - i,
+				Outputs:      []FailureOutput{{RunID: int64(i + 1), Output: "same error"}},
+			})
+		}
+		result := buildFailuresJSON(failures, nil)
+		if len(result) != 25 {
+			t.Fatalf("expected 25 failures, got %d", len(result))
+		}
+		for _, f := range result {
+			if len(f.Outputs) == 0 {
+				t.Errorf("failure %s should keep outputs (same signature = 1 slot)", f.TestName)
+			}
+		}
+	})
 
-	if len(result) != 25 {
-		t.Fatalf("expected 25 failures, got %d", len(result))
-	}
-	for i, f := range result {
-		if i < 20 && len(f.Outputs) == 0 {
-			t.Errorf("failure %d (%s) should have outputs (top 20)", i, f.TestName)
+	t.Run("distinct errors cap at 20 unique signatures", func(t *testing.T) {
+		var failures []RecentFailure
+		for i := 0; i < 25; i++ {
+			failures = append(failures, RecentFailure{
+				TestName:     fmt.Sprintf("test-%d", i),
+				FailureCount: 25 - i,
+				Outputs:      []FailureOutput{{RunID: int64(i + 1), Output: fmt.Sprintf("unique error %d", i)}},
+			})
 		}
-		if i >= 20 && len(f.Outputs) != 0 {
-			t.Errorf("failure %d (%s) should have nil outputs (beyond top 20)", i, f.TestName)
+		result := buildFailuresJSON(failures, nil)
+		if len(result) != 25 {
+			t.Fatalf("expected 25 failures, got %d", len(result))
 		}
-	}
+		withOutputs := 0
+		for _, f := range result {
+			if len(f.Outputs) > 0 {
+				withOutputs++
+			}
+		}
+		if withOutputs != 20 {
+			t.Errorf("expected 20 failures with outputs, got %d", withOutputs)
+		}
+		for i := 0; i < 20; i++ {
+			if len(result[i].Outputs) == 0 {
+				t.Errorf("failure %d (%s) should have outputs (within cap)", i, result[i].TestName)
+			}
+		}
+		for i := 20; i < 25; i++ {
+			if len(result[i].Outputs) != 0 {
+				t.Errorf("failure %d (%s) should have nil outputs (beyond cap)", i, result[i].TestName)
+			}
+		}
+	})
+
+	t.Run("cascade frees slots for tail", func(t *testing.T) {
+		var failures []RecentFailure
+		for i := 0; i < 15; i++ {
+			failures = append(failures, RecentFailure{
+				TestName:     fmt.Sprintf("cascade-%d", i),
+				FailureCount: 30,
+				Outputs:      []FailureOutput{{RunID: int64(i + 1), Output: "timeout 45 minutes exceeded"}},
+			})
+		}
+		for i := 0; i < 10; i++ {
+			failures = append(failures, RecentFailure{
+				TestName:     fmt.Sprintf("unique-%d", i),
+				FailureCount: 5 - (i / 3),
+				Outputs:      []FailureOutput{{RunID: int64(100 + i), Output: fmt.Sprintf("distinct error %d", i)}},
+			})
+		}
+		result := buildFailuresJSON(failures, nil)
+		uniqueWithOutputs := 0
+		for _, f := range result {
+			if len(f.Outputs) > 0 && strings.HasPrefix(f.TestName, "unique-") {
+				uniqueWithOutputs++
+			}
+		}
+		if uniqueWithOutputs != 10 {
+			t.Errorf("expected all 10 unique failures to have outputs (cascade uses 1 slot), got %d", uniqueWithOutputs)
+		}
+	})
 }
 
 func TestBuildRunsJSON_FailedOnly(t *testing.T) {
@@ -369,9 +429,9 @@ time=2026-04-22T17:07:24.476Z level=DEBUG msg="Resolved values."`,
 			"",
 		},
 		{
-			"returns empty for non-structured-log output",
+			"falls back to tail for non-structured-log output",
 			"some random error text without templatize format",
-			"",
+			"some random error text without templatize format",
 		},
 		{
 			"handles FATAL level",
@@ -390,6 +450,91 @@ time=2026-04-22T17:02:00.000Z level=ERROR msg="second error"`,
 			"",
 			"",
 		},
+		{
+			"extracts ARM JSON error code and message",
+			`{
+  "error": {
+    "code": "TooManyRequests",
+    "message": "ValidateVMScaleSetOperation exceeded throttling limit"
+  }
+}`,
+			"TooManyRequests: ValidateVMScaleSetOperation exceeded throttling limit",
+		},
+		{
+			"extracts all ARM error codes including wrapper",
+			`{
+  "status": "Failed",
+  "error": {
+    "code": "DeploymentFailed",
+    "message": "At least one resource deployment operation failed.",
+    "details": [
+      {
+        "code": "Conflict",
+        "message": "Operation conflict occurred.",
+        "details": [
+          {
+            "code": "TooManyRequests",
+            "message": "exceeded throttling limit of 0 calls within last 5 minutes"
+          }
+        ]
+      }
+    ]
+  }
+}`,
+			"DeploymentFailed: At least one resource deployment operation failed.\nConflict: Operation conflict occurred.\nTooManyRequests: exceeded throttling limit of 0 calls within last 5 minutes",
+		},
+		{
+			"extracts HTTP response error",
+			"GET https://management.azure.com/...\n--------------------------------------------------------------------------------\nRESPONSE 429: 429 Too Many Requests\nERROR CODE: TooManyRequests\n--------------------------------------------------------------------------------",
+			"HTTP 429: TooManyRequests",
+		},
+		{
+			"extracts err field from unstructured log",
+			`some prefix err="deployment failed: RoleAssignmentLimitExceeded" more text`,
+			"deployment failed: RoleAssignmentLimitExceeded",
+		},
+		{
+			"extracts last err field when multiple present",
+			`err="initial error" retrying... err="final error: quota exceeded"`,
+			"final error: quota exceeded",
+		},
+		{
+			"structured log takes priority over ARM JSON",
+			`time=2026-04-22T17:00:00.000Z level=ERROR msg="Step errored." error="bad"
+{"error": {"code": "TooManyRequests", "message": "limit exceeded"}}`,
+			"time=2026-04-22T17:00:00.000Z level=ERROR msg=\"Step errored.\" error=\"bad\"\n{\"error\": {\"code\": \"TooManyRequests\", \"message\": \"limit exceeded\"}}",
+		},
+		{
+			"tail fallback for opaque output",
+			"a]b]c]" + strings.Repeat("x", 600),
+			strings.Repeat("x", 500),
+		},
+		{
+			"real ARM TooManyRequests from presubmit pipeline",
+			`RESPONSE 200: 200 OK
+ERROR CODE: DeploymentFailed
+--------------------------------------------------------------------------------
+{
+  "status": "Failed",
+  "error": {
+    "code": "DeploymentFailed",
+    "message": "At least one resource deployment operation failed.",
+    "details": [
+      {
+        "code": "ResourceDeploymentFailure",
+        "message": "The resource operation completed with terminal provisioning state 'Failed'.",
+        "details": [
+          {
+            "code": "Conflict",
+            "message": "Operation could not be completed as it results in exceeding approved Total Regional Cores quota."
+          }
+        ]
+      }
+    ]
+  }
+}`,
+			"DeploymentFailed: At least one resource deployment operation failed.\nResourceDeploymentFailure: The resource operation completed with terminal provisioning state 'Failed'.\nConflict: Operation could not be completed as it results in exceeding approved Total Regional Cores quota.",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.desc, func(t *testing.T) {
@@ -398,6 +543,58 @@ time=2026-04-22T17:02:00.000Z level=ERROR msg="second error"`,
 				t.Errorf("extractStepError() =\n  %q\nwant\n  %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestExtractARMError_FiltersShortCodes(t *testing.T) {
+	input := `"code": "}", "message": "brace"` + "\n" + `"code": "DeploymentFailed", "message": "real error"`
+	got := extractARMError(input)
+	if strings.Contains(got, "}") {
+		t.Errorf("should filter single-char code, got %q", got)
+	}
+	if !strings.Contains(got, "DeploymentFailed") {
+		t.Errorf("should keep real code, got %q", got)
+	}
+}
+
+func TestMarkEmptyErrors(t *testing.T) {
+	failures := []RecentFailure{
+		{
+			TestName: "test with empty outputs",
+			Outputs:  []FailureOutput{{RunID: 1, Output: ""}, {RunID: 2, Output: ""}},
+		},
+		{
+			TestName: "test with some output",
+			Outputs:  []FailureOutput{{RunID: 3, Output: "real error"}},
+		},
+		{
+			TestName: "test with no outputs",
+			Outputs:  nil,
+		},
+	}
+	markEmptyErrors(failures)
+	if failures[0].Outputs[0].Output != emptyErrorSentinel {
+		t.Errorf("expected sentinel on first empty failure, got %q", failures[0].Outputs[0].Output)
+	}
+	if failures[1].Outputs[0].Output != "real error" {
+		t.Errorf("should not touch non-empty output, got %q", failures[1].Outputs[0].Output)
+	}
+}
+
+func TestErrorSignature(t *testing.T) {
+	outputs := []failureOutputJSON{
+		{Error: ""},
+		{Error: "timeout exceeded during cluster creation"},
+	}
+	sig := errorSignature(outputs)
+	if sig != "timeout exceeded during cluster creation" {
+		t.Errorf("expected non-empty error as signature, got %q", sig)
+	}
+	if errorSignature(nil) != "" {
+		t.Error("nil outputs should return empty signature")
+	}
+	if errorSignature([]failureOutputJSON{{Error: ""}}) != "" {
+		t.Error("all-empty outputs should return empty signature")
 	}
 }
 
@@ -526,7 +723,7 @@ func TestBuildDataWindow(t *testing.T) {
 		{Timestamp: now.Add(-48 * time.Hour).UnixMilli()},
 	}
 
-	dw := buildDataWindow(runs, 7, 2, false)
+	dw := buildDataWindow(runs, 7, 2, false, false)
 	if dw == nil {
 		t.Fatal("returned nil")
 	}
@@ -548,7 +745,7 @@ func TestBuildDataWindow(t *testing.T) {
 }
 
 func TestBuildDataWindow_Empty(t *testing.T) {
-	dw := buildDataWindow(nil, 7, 0, false)
+	dw := buildDataWindow(nil, 7, 0, false, false)
 	if dw == nil {
 		t.Fatal("returned nil")
 	}
@@ -982,4 +1179,128 @@ func TestBuildSurveyJSON_OutputShape(t *testing.T) {
 	}
 }
 
+func TestStratifyRuns(t *testing.T) {
+	t.Run("no stratification when under budget", func(t *testing.T) {
+		runs := make([]JobRun, 10)
+		base := time.Date(2026, 4, 22, 0, 0, 0, 0, time.UTC)
+		for i := range runs {
+			runs[i] = JobRun{
+				ID:        int64(i),
+				Timestamp: base.Add(time.Duration(i) * time.Hour).UnixMilli(),
+			}
+		}
+		result, stratified := stratifyRuns(runs, 5)
+		if stratified {
+			t.Error("should not stratify when under budget")
+		}
+		if len(result) != 10 {
+			t.Errorf("expected 10 runs, got %d", len(result))
+		}
+	})
+
+	t.Run("stratifies skewed distribution", func(t *testing.T) {
+		var runs []JobRun
+		base := time.Date(2026, 4, 22, 0, 0, 0, 0, time.UTC)
+		// Day 1: 50 runs, Day 2: 300 runs, Day 3: 50 runs
+		for i := range 50 {
+			runs = append(runs, JobRun{
+				ID:        int64(i),
+				Timestamp: base.Add(time.Duration(i) * time.Minute).UnixMilli(),
+			})
+		}
+		for i := range 300 {
+			runs = append(runs, JobRun{
+				ID:        int64(100 + i),
+				Timestamp: base.Add(24*time.Hour + time.Duration(i)*time.Minute).UnixMilli(),
+			})
+		}
+		for i := range 50 {
+			runs = append(runs, JobRun{
+				ID:        int64(500 + i),
+				Timestamp: base.Add(48*time.Hour + time.Duration(i)*time.Minute).UnixMilli(),
+			})
+		}
+
+		result, stratified := stratifyRuns(runs, 5)
+		if !stratified {
+			t.Error("should stratify when day 2 exceeds budget (300 > 200)")
+		}
+
+		// Count per day
+		dayCounts := map[string]int{}
+		for _, r := range result {
+			day := time.UnixMilli(r.Timestamp).UTC().Format("2006-01-02")
+			dayCounts[day]++
+		}
+
+		// Day 1 and 3 should keep all 50 (under budget)
+		if dayCounts["2026-04-22"] != 50 {
+			t.Errorf("day 1: expected 50, got %d", dayCounts["2026-04-22"])
+		}
+		if dayCounts["2026-04-24"] != 50 {
+			t.Errorf("day 3: expected 50, got %d", dayCounts["2026-04-24"])
+		}
+		// Day 2 should be capped to maxRunsFetch/days = 1000/5 = 200
+		if dayCounts["2026-04-23"] != 200 {
+			t.Errorf("day 2: expected 200, got %d", dayCounts["2026-04-23"])
+		}
+	})
+
+	t.Run("deterministic output", func(t *testing.T) {
+		var runs []JobRun
+		base := time.Date(2026, 4, 22, 0, 0, 0, 0, time.UTC)
+		for i := range 500 {
+			runs = append(runs, JobRun{
+				ID:        int64(i),
+				Timestamp: base.Add(time.Duration(i) * time.Minute).UnixMilli(),
+			})
+		}
+
+		r1, _ := stratifyRuns(runs, 3)
+		r2, _ := stratifyRuns(runs, 3)
+
+		if len(r1) != len(r2) {
+			t.Fatalf("non-deterministic: len %d vs %d", len(r1), len(r2))
+		}
+		for i := range r1 {
+			if r1[i].ID != r2[i].ID {
+				t.Errorf("non-deterministic at index %d: ID %d vs %d", i, r1[i].ID, r2[i].ID)
+				break
+			}
+		}
+	})
+
+	t.Run("sorted descending by timestamp", func(t *testing.T) {
+		var runs []JobRun
+		base := time.Date(2026, 4, 22, 0, 0, 0, 0, time.UTC)
+		// 600 runs on day 1 exceeds 1000/2=500 budget
+		for i := range 600 {
+			runs = append(runs, JobRun{
+				ID:        int64(i),
+				Timestamp: base.Add(time.Duration(i) * time.Minute).UnixMilli(),
+			})
+		}
+
+		result, stratified := stratifyRuns(runs, 2)
+		if !stratified {
+			t.Error("expected stratification for 600 runs over 2 days")
+		}
+		for i := 1; i < len(result); i++ {
+			if result[i].Timestamp > result[i-1].Timestamp {
+				t.Errorf("not descending at index %d: %d > %d", i, result[i].Timestamp, result[i-1].Timestamp)
+				break
+			}
+		}
+	})
+
+	t.Run("empty runs", func(t *testing.T) {
+		result, stratified := stratifyRuns(nil, 5)
+		if stratified {
+			t.Error("should not stratify empty runs")
+		}
+		if result != nil {
+			t.Errorf("expected nil, got %v", result)
+		}
+	})
+}
 
