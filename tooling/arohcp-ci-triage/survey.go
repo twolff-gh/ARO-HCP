@@ -19,7 +19,6 @@ const (
 	isolatedFailureCeiling = 3
 	moderateFailureCeiling = 15
 	neighborRunsLimit        = 100
-	maxFailuresWithOutputs   = 30
 	maxEnrichmentRuns        = 200
 )
 
@@ -227,6 +226,7 @@ func fetchSurveyData(s *sippy, env string, days int, jobPat, testPat string) (*s
 	}
 	failures = filterFailuresToRuns(failures, runs)
 	supplementMissingOutputs(failures, runs)
+	failures = dropUnverifiable(failures)
 	enrichMissingErrors(failures, runs)
 	enrichPipelineStepErrorsGCS(failures, runs)
 	extractPipelineStepErrors(failures)
@@ -591,28 +591,6 @@ func buildFailuresJSON(failures []RecentFailure, runs []JobRun) []failureJSON {
 	slices.SortFunc(result, func(a, b failureJSON) int {
 		return cmp.Compare(b.FailureCount, a.FailureCount)
 	})
-	seen := map[string]bool{}
-	unique := 0
-	for i := range result {
-		sig := errorSignature(result[i].Outputs)
-		if sig == "" {
-			continue
-		}
-		if seen[sig] {
-			continue
-		}
-		unique++
-		if unique > maxFailuresWithOutputs {
-			for j := i; j < len(result); j++ {
-				jSig := errorSignature(result[j].Outputs)
-				if jSig != "" && !seen[jSig] {
-					result[j].Outputs = nil
-				}
-			}
-			break
-		}
-		seen[sig] = true
-	}
 	return result
 }
 
@@ -688,18 +666,6 @@ func buildSignatures(failures []failureJSON) []signatureJSON {
 		return cmp.Compare(b.HitCount, a.HitCount)
 	})
 	return result
-}
-
-func errorSignature(outputs []failureOutputJSON) string {
-	for _, o := range outputs {
-		if o.ExtractedErrors != "" {
-			return normalizeError(o.ExtractedErrors)
-		}
-		if o.Error != "" && o.Error != emptyErrorSentinel {
-			return normalizeError(o.Error)
-		}
-	}
-	return ""
 }
 
 // --- Dispatch ---
@@ -1325,6 +1291,16 @@ func enrichLastPass(failures []RecentFailure, runs []JobRun) {
 // filterFailuresToRuns keeps only failures whose outputs reference runs in our
 // job-filtered runs list. Sippy's recentFailures API for "Presubmits" returns
 // failures across ALL presubmit jobs; this scopes them to our specific jobs.
+func dropUnverifiable(failures []RecentFailure) []RecentFailure {
+	var result []RecentFailure
+	for _, f := range failures {
+		if len(f.Outputs) > 0 {
+			result = append(result, f)
+		}
+	}
+	return result
+}
+
 func supplementMissingOutputs(failures []RecentFailure, runs []JobRun) {
 	testToRuns := map[string][]int64{}
 	for _, r := range runs {
@@ -1359,7 +1335,6 @@ func filterFailuresToRuns(failures []RecentFailure, runs []JobRun) []RecentFailu
 
 	var filtered []RecentFailure
 	for _, f := range failures {
-		// Keep if any output references one of our runs
 		hasMatchingRun := false
 		for _, out := range f.Outputs {
 			if runIDs[out.RunID] {
@@ -1367,13 +1342,20 @@ func filterFailuresToRuns(failures []RecentFailure, runs []JobRun) []RecentFailu
 				break
 			}
 		}
-		// Or if the test name appears in our runs' failure lists
 		if !hasMatchingRun && testNames[f.TestName] {
 			hasMatchingRun = true
 		}
-		if hasMatchingRun {
-			filtered = append(filtered, f)
+		if !hasMatchingRun {
+			continue
 		}
+		var validOutputs []FailureOutput
+		for _, out := range f.Outputs {
+			if runIDs[out.RunID] {
+				validOutputs = append(validOutputs, out)
+			}
+		}
+		f.Outputs = validOutputs
+		filtered = append(filtered, f)
 	}
 	return filtered
 }

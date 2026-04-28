@@ -303,88 +303,99 @@ func TestBuildFailuresJSON(t *testing.T) {
 	}
 }
 
-func TestBuildFailuresJSON_OutputCapping(t *testing.T) {
-	t.Run("same error deduplicates to one slot", func(t *testing.T) {
+// DO NOT ADD AN OUTPUT CAP TO buildFailuresJSON.
+//
+// History: an output cap (maxFailuresWithOutputs=20) existed to prevent
+// cascade failures from bloating JSON — 25 tests with the same timeout
+// each consumed a slot. Signature-based dedup replaced this: cascade
+// tests share one signature regardless of count.
+//
+// The cap caused three bugs in one session:
+// 1. backfillErrorsFromEnvelopes filled error text, then the cap
+//    stripped it, then buildSignatures saw nil → "(no error text)"
+// 2. Raising the cap to 30 still hit the limit with 31 signatures
+// 3. The cap interacted with enrichment ordering — enriched data was
+//    lost depending on which step ran first
+//
+// Signatures handle the compression that the cap was designed for.
+// The JSON size difference is ~4% (negligible). Do not re-add a cap.
+func TestBuildFailuresJSON_NoOutputCap(t *testing.T) {
+	t.Run("50 distinct errors all keep outputs", func(t *testing.T) {
 		var failures []RecentFailure
-		for i := 0; i < 25; i++ {
+		for i := range 50 {
 			failures = append(failures, RecentFailure{
 				TestName:     fmt.Sprintf("test-%d", i),
-				FailureCount: 25 - i,
-				Outputs:      []FailureOutput{{RunID: int64(i + 1), Output: "same error"}},
-			})
-		}
-		result := buildFailuresJSON(failures, nil)
-		if len(result) != 25 {
-			t.Fatalf("expected 25 failures, got %d", len(result))
-		}
-		for _, f := range result {
-			if len(f.Outputs) == 0 {
-				t.Errorf("failure %s should keep outputs (same signature = 1 slot)", f.TestName)
-			}
-		}
-	})
-
-	t.Run("distinct errors cap at maxFailuresWithOutputs unique signatures", func(t *testing.T) {
-		var failures []RecentFailure
-		for i := 0; i < 35; i++ {
-			failures = append(failures, RecentFailure{
-				TestName:     fmt.Sprintf("test-%d", i),
-				FailureCount: 35 - i,
+				FailureCount: 50 - i,
 				Outputs:      []FailureOutput{{RunID: int64(i + 1), Output: fmt.Sprintf("unique error %d", i)}},
 			})
 		}
 		result := buildFailuresJSON(failures, nil)
-		if len(result) != 35 {
-			t.Fatalf("expected 35 failures, got %d", len(result))
-		}
-		withOutputs := 0
-		for _, f := range result {
-			if len(f.Outputs) > 0 {
-				withOutputs++
-			}
-		}
-		if withOutputs != maxFailuresWithOutputs {
-			t.Errorf("expected %d failures with outputs, got %d", maxFailuresWithOutputs, withOutputs)
-		}
-		for i := 0; i < maxFailuresWithOutputs; i++ {
-			if len(result[i].Outputs) == 0 {
-				t.Errorf("failure %d (%s) should have outputs (within cap)", i, result[i].TestName)
-			}
-		}
-		for i := maxFailuresWithOutputs; i < 35; i++ {
-			if len(result[i].Outputs) != 0 {
-				t.Errorf("failure %d (%s) should have nil outputs (beyond cap)", i, result[i].TestName)
+		for i, f := range result {
+			if len(f.Outputs) == 0 {
+				t.Errorf("failure %d (%s): outputs stripped — output cap was re-added?", i, f.TestName)
 			}
 		}
 	})
 
-	t.Run("cascade frees slots for tail", func(t *testing.T) {
-		var failures []RecentFailure
-		for i := 0; i < 15; i++ {
-			failures = append(failures, RecentFailure{
-				TestName:     fmt.Sprintf("cascade-%d", i),
-				FailureCount: 30,
-				Outputs:      []FailureOutput{{RunID: int64(i + 1), Output: "timeout 45 minutes exceeded"}},
-			})
-		}
-		for i := 0; i < 10; i++ {
-			failures = append(failures, RecentFailure{
-				TestName:     fmt.Sprintf("unique-%d", i),
-				FailureCount: 5 - (i / 3),
-				Outputs:      []FailureOutput{{RunID: int64(100 + i), Output: fmt.Sprintf("distinct error %d", i)}},
-			})
+	t.Run("sorted by failure count descending", func(t *testing.T) {
+		failures := []RecentFailure{
+			{TestName: "low", FailureCount: 1, Outputs: []FailureOutput{{RunID: 1, Output: "a"}}},
+			{TestName: "high", FailureCount: 10, Outputs: []FailureOutput{{RunID: 2, Output: "b"}}},
 		}
 		result := buildFailuresJSON(failures, nil)
-		uniqueWithOutputs := 0
-		for _, f := range result {
-			if len(f.Outputs) > 0 && strings.HasPrefix(f.TestName, "unique-") {
-				uniqueWithOutputs++
-			}
-		}
-		if uniqueWithOutputs != 10 {
-			t.Errorf("expected all 10 unique failures to have outputs (cascade uses 1 slot), got %d", uniqueWithOutputs)
+		if result[0].FailureCount < result[1].FailureCount {
+			t.Error("should sort by failure count descending")
 		}
 	})
+}
+
+func TestDropUnverifiable(t *testing.T) {
+	failures := []RecentFailure{
+		{TestName: "has outputs", Outputs: []FailureOutput{{RunID: 1, Output: "error"}}},
+		{TestName: "no outputs", Outputs: nil},
+		{TestName: "empty outputs", Outputs: []FailureOutput{}},
+		{TestName: "also has", Outputs: []FailureOutput{{RunID: 2}}},
+	}
+	result := dropUnverifiable(failures)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 verifiable failures, got %d", len(result))
+	}
+	if result[0].TestName != "has outputs" || result[1].TestName != "also has" {
+		t.Errorf("wrong failures kept: %s, %s", result[0].TestName, result[1].TestName)
+	}
+}
+
+func TestFilterFailuresToRuns_StripsForeignOutputs(t *testing.T) {
+	runs := []JobRun{
+		{ID: 1, FailedTestNames: []string{"testA"}},
+		{ID: 2, FailedTestNames: []string{"testA", "testB"}},
+	}
+	failures := []RecentFailure{
+		{
+			TestName: "testA",
+			Outputs: []FailureOutput{
+				{RunID: 1, Output: "our run"},
+				{RunID: 999, Output: "foreign run"},
+			},
+		},
+		{
+			TestName: "testB",
+			Outputs: []FailureOutput{
+				{RunID: 888, Output: "all foreign"},
+			},
+		},
+	}
+	result := filterFailuresToRuns(failures, runs)
+
+	if len(result) != 2 {
+		t.Fatalf("expected 2 failures (both test names in FailedTestNames), got %d", len(result))
+	}
+	if len(result[0].Outputs) != 1 || result[0].Outputs[0].RunID != 1 {
+		t.Errorf("testA should keep only run 1, got %d outputs", len(result[0].Outputs))
+	}
+	if len(result[1].Outputs) != 0 {
+		t.Errorf("testB should have 0 outputs (all foreign stripped), got %d", len(result[1].Outputs))
+	}
 }
 
 func TestBuildRunsJSON_FailedOnly(t *testing.T) {
@@ -578,23 +589,6 @@ func TestMarkEmptyErrors(t *testing.T) {
 	}
 	if failures[1].Outputs[0].Output != "real error" {
 		t.Errorf("should not touch non-empty output, got %q", failures[1].Outputs[0].Output)
-	}
-}
-
-func TestErrorSignature(t *testing.T) {
-	outputs := []failureOutputJSON{
-		{Error: ""},
-		{Error: "timeout exceeded during cluster creation"},
-	}
-	sig := errorSignature(outputs)
-	if sig != "timeout exceeded during cluster creation" {
-		t.Errorf("expected non-empty error as signature, got %q", sig)
-	}
-	if errorSignature(nil) != "" {
-		t.Error("nil outputs should return empty signature")
-	}
-	if errorSignature([]failureOutputJSON{{Error: ""}}) != "" {
-		t.Error("all-empty outputs should return empty signature")
 	}
 }
 
@@ -1451,43 +1445,4 @@ func TestBuildSignatures(t *testing.T) {
 	})
 }
 
-func TestErrorSignature_Extended(t *testing.T) {
-	t.Run("prefers extracted_errors", func(t *testing.T) {
-		outputs := []failureOutputJSON{
-			{Error: "raw info log", ExtractedErrors: "ERROR: real problem"},
-		}
-		sig := errorSignature(outputs)
-		if strings.Contains(sig, "raw info") {
-			t.Errorf("should prefer extracted_errors, got %q", sig)
-		}
-	})
-
-	t.Run("skips sentinel", func(t *testing.T) {
-		outputs := []failureOutputJSON{
-			{Error: emptyErrorSentinel},
-			{Error: "real error"},
-		}
-		sig := errorSignature(outputs)
-		if sig == "" || strings.Contains(sig, "not available") {
-			t.Errorf("should skip sentinel, got %q", sig)
-		}
-	})
-
-	t.Run("returns empty for all-empty", func(t *testing.T) {
-		outputs := []failureOutputJSON{{Error: ""}, {Error: ""}}
-		if errorSignature(outputs) != "" {
-			t.Error("should return empty for all-empty outputs")
-		}
-	})
-
-	t.Run("normalizes the result", func(t *testing.T) {
-		outputs := []failureOutputJSON{
-			{Error: `fail [file.go:99]: Unexpected error: <*fmt.wrapErrors | 0xabc>: timeout '45.000000' minutes exceeded`},
-		}
-		sig := errorSignature(outputs)
-		if strings.Contains(sig, "fail [") || strings.Contains(sig, "0xabc") || strings.Contains(sig, "45.000000") {
-			t.Errorf("should normalize, got %q", sig)
-		}
-	})
-}
 
