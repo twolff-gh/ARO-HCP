@@ -20,7 +20,7 @@ const (
 	moderateFailureCeiling = 15
 	neighborRunsLimit        = 100
 	maxFailuresWithOutputs   = 30
-	maxEnrichmentRuns        = 50
+	maxEnrichmentRuns        = 200
 )
 
 func runSurvey(args []string) error {
@@ -595,22 +595,23 @@ func buildFailuresJSON(failures []RecentFailure, runs []JobRun) []failureJSON {
 	unique := 0
 	for i := range result {
 		sig := errorSignature(result[i].Outputs)
-		if sig != "" && seen[sig] {
+		if sig == "" {
+			continue
+		}
+		if seen[sig] {
 			continue
 		}
 		unique++
 		if unique > maxFailuresWithOutputs {
 			for j := i; j < len(result); j++ {
 				jSig := errorSignature(result[j].Outputs)
-				if jSig == "" || !seen[jSig] {
+				if jSig != "" && !seen[jSig] {
 					result[j].Outputs = nil
 				}
 			}
 			break
 		}
-		if sig != "" {
-			seen[sig] = true
-		}
+		seen[sig] = true
 	}
 	return result
 }
