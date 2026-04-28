@@ -207,44 +207,91 @@ Patterns that span run types reveal root cause layer:
 
 ## Output
 
-### Step 7: Publish HTML report
+### Step 7: Write the report as markdown
 
-**Template:** `tooling/arohcp-ci-triage/report-template.html`. Do NOT read or copy the template — just write the DATA JSON and run the injection command.
+Write the full report directly in the conversation as markdown. This IS the deliverable. Structure it exactly as follows:
 
-**How:**
-1. Write DATA object (JSON) to `/tmp/ciscan-data.json`
-2. Inject into template: `python3 -c "import json; d=json.dumps(json.load(open('/tmp/ciscan-data.json')),ensure_ascii=False); t=open('tooling/arohcp-ci-triage/report-template.html').read(); open('/tmp/ciscan-report.html','w').write(t.replace('const DATA = null;','const DATA = '+d+';'))"` (do NOT use sed — it mangles unicode escapes)
-3. Open with `xdg-open /tmp/ciscan-report.html`
+```markdown
+# CI Fleet Assessment — [scope] · [window] · [date]
 
-**DATA shape:**
-```json
-{
-  "title": "CI Fleet Assessment",
-  "subtitle": "scope · window · N findings",
-  "generated": "ISO 8601",
-  "fleetCards": [{ "env", "name", "passRate", "detail", "severity", "sparkline" }],
-  "findings": [{
-    "priority": "P1|P2|P3",
-    "envs": ["int","stg"],
-    "title": "...", "error": "...",
-    "dims": {"Trend": "...", "Tests affected": "..."},
-    "hypothesis": "...", "action": "...",
-    "deployTimeline": [...], "affectedPRs": [...],
-    "relatedFailures": [{"count", "name", "error", "url"}],
-    "evidence": ["[source:field] observation — value"]
-  }],
-  "nightly": [{"env", "passRate", "runs", "detail"}],
-  "coverageGaps": ["..."]
-}
+## Fleet Status
+
+| Env | Pass Rate | Runs | Severity | Detail |
+|---|---|---|---|---|
+| INT | 72.7% | 11 | OK | 2d actual (truncated). 3 signatures. |
+| STG | 55.6% | 9 | Warning | 5d. 1 cascade run. |
+| PROD | 18.2% | 11 | Critical | 4d. All hashes failing. |
+| Presubmit | 28.4% | 335 | Critical | 104 provision failures. 133 with >100s pod sched. |
+
+Severity: <30% = Critical, 30-60% = Warning, >60% = OK
+
+## Findings
+
+### P1 — [Title] [ENV tags]
+
+**Error:** `normalized error signature`
+
+| Dimension | Value |
+|---|---|
+| Trend | Persistent / improving / worsening |
+| Tests affected | N tests |
+| Cross-env | envs and hit counts |
+| Deploy correlated | Yes/No — cite ev2_onsets or ev2_hash_rates |
+
+**Envelope evidence:**
+- [envelope:exit_code] All N runs: 1 — test failure, not crash
+- [envelope:oom] All runs: false
+- [envelope:lease_wait_s] max Xs — no contention
+- [envelope:error_chain] "chain text..."
+
+**Hypothesis:** [what's happening and why]
+
+**Action:** [what to do next]
+
+<details>
+<summary>Affected tests (N)</summary>
+
+| Count | Test | Error |
+|---|---|---|
+| 11x | [PROD] test name | error summary |
+| 9x | [STG] test name | error summary |
+
+</details>
+
+<details>
+<summary>Deploy timeline</summary>
+
+| Time | Hash | Result | Detail |
+|---|---|---|---|
+| 04/23 00:08 | 3e5c4d579c24 | FAIL | 9 failures |
+| 04/23 23:08 | 5276b688af51 | FAIL | 7 failures (new deploy) |
+
+</details>
+
+[Repeat for each finding, ordered by priority]
+
+## Nightly
+
+| Env | Pass Rate | Runs | Detail |
+|---|---|---|---|
+| INT | 0% | 2 | All cascade. Same timeout as periodic. |
+| PROD | 0% | 5 | All cascade. Candidate OCP. |
+
+## Coverage Gaps
+
+- [gap 1]
+- [gap 2]
 ```
 
-**Severity:** passRate <30% = "critical", 30-60% = "warning", >60% = "ok".
+**Rules:**
+- Every failure must appear in a finding. Cluster by signature, list ALL tests.
+- Evidence from envelopes is REQUIRED for each finding.
+- Deploy timeline: one row per run in timestamp order. Mark hash transitions.
+- Use `<details>` for affected tests and deploy timelines — keeps the report scannable.
+- Prefix test names with `[PROD]`, `[STG]`, `[INT]`, or `[PRESUBMIT]`.
+- If ev2_onsets detected a hash transition, cite it in the finding's deploy correlation.
 
-**Deploy timeline rows:** Each row is ONE RUN — `ts`, `hash`, `pass`/`fail`, `meta`. Set `newDeploy: true` on hash transitions.
-
-**Findings evidence MUST cite envelope data.** Example: `"[envelope:error_chain] ContainerFailed exit code 1 — all 9 runs"`, `"[envelope:lease_wait_s] max 1.1s across all runs — no contention"`.
-
-**In conversation:** Brief summary (fleet status, finding count). HTML report is the deliverable.
+**Optional HTML report:** If the user asks for HTML, the template is at `tooling/arohcp-ci-triage/report-template.html`. Inject data with: `python3 -c "import json; d=json.dumps(json.load(open('/tmp/ciscan-data.json')),ensure_ascii=False); t=open('tooling/arohcp-ci-triage/report-template.html').read(); open('/tmp/ciscan-report.html','w').write(t.replace('const DATA = null;','const DATA = '+d+';'))"`
 
 ## Error Handling
 
