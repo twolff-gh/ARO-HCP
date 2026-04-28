@@ -324,18 +324,18 @@ func TestBuildFailuresJSON_OutputCapping(t *testing.T) {
 		}
 	})
 
-	t.Run("distinct errors cap at 20 unique signatures", func(t *testing.T) {
+	t.Run("distinct errors cap at maxFailuresWithOutputs unique signatures", func(t *testing.T) {
 		var failures []RecentFailure
-		for i := 0; i < 25; i++ {
+		for i := 0; i < 35; i++ {
 			failures = append(failures, RecentFailure{
 				TestName:     fmt.Sprintf("test-%d", i),
-				FailureCount: 25 - i,
+				FailureCount: 35 - i,
 				Outputs:      []FailureOutput{{RunID: int64(i + 1), Output: fmt.Sprintf("unique error %d", i)}},
 			})
 		}
 		result := buildFailuresJSON(failures, nil)
-		if len(result) != 25 {
-			t.Fatalf("expected 25 failures, got %d", len(result))
+		if len(result) != 35 {
+			t.Fatalf("expected 35 failures, got %d", len(result))
 		}
 		withOutputs := 0
 		for _, f := range result {
@@ -343,15 +343,15 @@ func TestBuildFailuresJSON_OutputCapping(t *testing.T) {
 				withOutputs++
 			}
 		}
-		if withOutputs != 20 {
-			t.Errorf("expected 20 failures with outputs, got %d", withOutputs)
+		if withOutputs != maxFailuresWithOutputs {
+			t.Errorf("expected %d failures with outputs, got %d", maxFailuresWithOutputs, withOutputs)
 		}
-		for i := 0; i < 20; i++ {
+		for i := 0; i < maxFailuresWithOutputs; i++ {
 			if len(result[i].Outputs) == 0 {
 				t.Errorf("failure %d (%s) should have outputs (within cap)", i, result[i].TestName)
 			}
 		}
-		for i := 20; i < 25; i++ {
+		for i := maxFailuresWithOutputs; i < 35; i++ {
 			if len(result[i].Outputs) != 0 {
 				t.Errorf("failure %d (%s) should have nil outputs (beyond cap)", i, result[i].TestName)
 			}

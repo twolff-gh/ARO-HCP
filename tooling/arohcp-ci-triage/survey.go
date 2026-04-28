@@ -19,7 +19,7 @@ const (
 	isolatedFailureCeiling = 3
 	moderateFailureCeiling = 15
 	neighborRunsLimit        = 100
-	maxFailuresWithOutputs   = 20
+	maxFailuresWithOutputs   = 30
 	maxEnrichmentRuns        = 50
 )
 
