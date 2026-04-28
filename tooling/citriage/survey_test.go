@@ -1304,3 +1304,190 @@ func TestStratifyRuns(t *testing.T) {
 	})
 }
 
+func TestSupplementMissingOutputs(t *testing.T) {
+	runs := []JobRun{
+		{ID: 1, FailedTestNames: []string{"testA", "testB"}},
+		{ID: 2, FailedTestNames: []string{"testA"}},
+	}
+
+	t.Run("fills empty outputs from runs", func(t *testing.T) {
+		failures := []RecentFailure{
+			{TestName: "testA", Outputs: nil},
+			{TestName: "testB", Outputs: []FailureOutput{{RunID: 1, Output: "existing"}}},
+		}
+		supplementMissingOutputs(failures, runs)
+		if len(failures[0].Outputs) != 2 {
+			t.Errorf("testA: expected 2 outputs (from runs 1 and 2), got %d", len(failures[0].Outputs))
+		}
+		if len(failures[1].Outputs) != 1 {
+			t.Errorf("testB: should keep existing output, got %d", len(failures[1].Outputs))
+		}
+	})
+
+	t.Run("does not duplicate existing outputs", func(t *testing.T) {
+		failures := []RecentFailure{
+			{TestName: "testA", Outputs: []FailureOutput{{RunID: 1}}},
+		}
+		supplementMissingOutputs(failures, runs)
+		if len(failures[0].Outputs) != 1 {
+			t.Errorf("should not add outputs when already present, got %d", len(failures[0].Outputs))
+		}
+	})
+}
+
+func TestBackfillErrorsFromEnvelopes(t *testing.T) {
+	t.Run("fills sentinel with error chain", func(t *testing.T) {
+		failures := []RecentFailure{
+			{TestName: "Build image test", Outputs: []FailureOutput{
+				{RunID: 1, Output: emptyErrorSentinel},
+			}},
+		}
+		runs := []runJSON{
+			{ID: 1, Envelope: &RunEnvelope{ErrorChain: "DockerBuildFailed"}},
+		}
+		backfillErrorsFromEnvelopes(failures, runs)
+		if failures[0].Outputs[0].Output != "DockerBuildFailed" {
+			t.Errorf("expected backfill, got %q", failures[0].Outputs[0].Output)
+		}
+	})
+
+	t.Run("does not overwrite real error text", func(t *testing.T) {
+		failures := []RecentFailure{
+			{TestName: "real test", Outputs: []FailureOutput{
+				{RunID: 1, Output: "timeout exceeded"},
+			}},
+		}
+		runs := []runJSON{
+			{ID: 1, Envelope: &RunEnvelope{ErrorChain: "ContainerFailed"}},
+		}
+		backfillErrorsFromEnvelopes(failures, runs)
+		if failures[0].Outputs[0].Output != "timeout exceeded" {
+			t.Errorf("should not overwrite real error, got %q", failures[0].Outputs[0].Output)
+		}
+	})
+
+	t.Run("fills empty output with error chain", func(t *testing.T) {
+		failures := []RecentFailure{
+			{TestName: "empty test", Outputs: []FailureOutput{
+				{RunID: 1, Output: ""},
+			}},
+		}
+		runs := []runJSON{
+			{ID: 1, Envelope: &RunEnvelope{ErrorChain: "DockerBuildFailed"}},
+		}
+		backfillErrorsFromEnvelopes(failures, runs)
+		if failures[0].Outputs[0].Output != "DockerBuildFailed" {
+			t.Errorf("expected backfill for empty output, got %q", failures[0].Outputs[0].Output)
+		}
+	})
+}
+
+func TestBuildSignatures(t *testing.T) {
+	t.Run("groups by normalized error", func(t *testing.T) {
+		failures := []failureJSON{
+			{TestName: "test1", FailureCount: 5, Outputs: []failureOutputJSON{
+				{Error: `fail [file.go:1]: Unexpected error: <*fmt.wrapErrors | 0xabc>: timeout '45.000000' minutes exceeded during CreateHCPCluster20251223FromParam for cluster my-cluster in resource group my-rg`},
+			}},
+			{TestName: "test2", FailureCount: 3, Outputs: []failureOutputJSON{
+				{Error: `fail [file.go:2]: Unexpected error: <*fmt.wrapErrors | 0xdef>: timeout '45.000000' minutes exceeded during CreateHCPClusterFromParam for cluster other-cluster in resource group other-rg`},
+			}},
+			{TestName: "test3", FailureCount: 1, Outputs: []failureOutputJSON{
+				{Error: "completely different error"},
+			}},
+		}
+		sigs := buildSignatures(failures)
+		if len(sigs) != 2 {
+			t.Fatalf("expected 2 signatures (timeout group + different), got %d", len(sigs))
+		}
+		if sigs[0].TestCount != 2 {
+			t.Errorf("first signature should have 2 tests, got %d", sigs[0].TestCount)
+		}
+		if sigs[0].HitCount != 8 {
+			t.Errorf("first signature should have 8 hits (5+3), got %d", sigs[0].HitCount)
+		}
+	})
+
+	t.Run("prefers extracted_errors for signature key", func(t *testing.T) {
+		failures := []failureJSON{
+			{TestName: "pipeline step", FailureCount: 1, Outputs: []failureOutputJSON{
+				{Error: "time=2026 level=INFO msg=\"Running step.\"", ExtractedErrors: "level=ERROR err=\"DeploymentFailed\""},
+			}},
+		}
+		sigs := buildSignatures(failures)
+		if len(sigs) != 1 {
+			t.Fatalf("expected 1 signature, got %d", len(sigs))
+		}
+		if strings.Contains(sigs[0].Key, "Running step") {
+			t.Errorf("signature should use extracted_errors, not error: %q", sigs[0].Key)
+		}
+		if !strings.Contains(sigs[0].Key, "DeploymentFailed") {
+			t.Errorf("signature should contain DeploymentFailed: %q", sigs[0].Key)
+		}
+	})
+
+	t.Run("empty errors grouped as no-text", func(t *testing.T) {
+		failures := []failureJSON{
+			{TestName: "empty1", FailureCount: 1, Outputs: []failureOutputJSON{{Error: ""}}},
+			{TestName: "empty2", FailureCount: 1, Outputs: []failureOutputJSON{{Error: ""}}},
+		}
+		sigs := buildSignatures(failures)
+		if len(sigs) != 1 {
+			t.Fatalf("expected 1 signature for empty errors, got %d", len(sigs))
+		}
+		if sigs[0].Key != "(no error text)" {
+			t.Errorf("expected '(no error text)' key, got %q", sigs[0].Key)
+		}
+	})
+
+	t.Run("sorted by hit count descending", func(t *testing.T) {
+		failures := []failureJSON{
+			{TestName: "low", FailureCount: 1, Outputs: []failureOutputJSON{{Error: "error A"}}},
+			{TestName: "high", FailureCount: 10, Outputs: []failureOutputJSON{{Error: "error B"}}},
+		}
+		sigs := buildSignatures(failures)
+		if sigs[0].HitCount < sigs[1].HitCount {
+			t.Errorf("signatures should be sorted by hit count desc: %d < %d", sigs[0].HitCount, sigs[1].HitCount)
+		}
+	})
+}
+
+func TestErrorSignature_Extended(t *testing.T) {
+	t.Run("prefers extracted_errors", func(t *testing.T) {
+		outputs := []failureOutputJSON{
+			{Error: "raw info log", ExtractedErrors: "ERROR: real problem"},
+		}
+		sig := errorSignature(outputs)
+		if strings.Contains(sig, "raw info") {
+			t.Errorf("should prefer extracted_errors, got %q", sig)
+		}
+	})
+
+	t.Run("skips sentinel", func(t *testing.T) {
+		outputs := []failureOutputJSON{
+			{Error: emptyErrorSentinel},
+			{Error: "real error"},
+		}
+		sig := errorSignature(outputs)
+		if sig == "" || strings.Contains(sig, "not available") {
+			t.Errorf("should skip sentinel, got %q", sig)
+		}
+	})
+
+	t.Run("returns empty for all-empty", func(t *testing.T) {
+		outputs := []failureOutputJSON{{Error: ""}, {Error: ""}}
+		if errorSignature(outputs) != "" {
+			t.Error("should return empty for all-empty outputs")
+		}
+	})
+
+	t.Run("normalizes the result", func(t *testing.T) {
+		outputs := []failureOutputJSON{
+			{Error: `fail [file.go:99]: Unexpected error: <*fmt.wrapErrors | 0xabc>: timeout '45.000000' minutes exceeded`},
+		}
+		sig := errorSignature(outputs)
+		if strings.Contains(sig, "fail [") || strings.Contains(sig, "0xabc") || strings.Contains(sig, "45.000000") {
+			t.Errorf("should normalize, got %q", sig)
+		}
+	})
+}
+

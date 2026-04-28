@@ -228,7 +228,6 @@ func fetchSurveyData(s *sippy, env string, days int, jobPat, testPat string) (*s
 	failures = filterFailuresToRuns(failures, runs)
 	supplementMissingOutputs(failures, runs)
 	enrichMissingErrors(failures, runs)
-	enrichPipelineStepErrors(s, failures, runs)
 	enrichPipelineStepErrorsGCS(failures, runs)
 	extractPipelineStepErrors(failures)
 	markEmptyErrors(failures)
@@ -1182,77 +1181,6 @@ func enrichMissingErrors(failures []RecentFailure, runs []JobRun) {
 	}
 }
 
-// enrichPipelineStepErrors fills in error text for "Run pipeline step ..." failures
-// by fetching per-run summaries from the Sippy API. The RunSummary.TestFailures
-// map uses exact Sippy test names as keys, avoiding the name-matching problem
-// with JUnit XML (which uses ci-operator step names, not pipeline step paths).
-func enrichPipelineStepErrors(s *sippy, failures []RecentFailure, _ []JobRun) {
-	needRunIDs := map[int64]bool{}
-	stepFailureIdx := map[string][]int{}
-	for i, f := range failures {
-		if !strings.HasPrefix(f.TestName, "Run pipeline step ") {
-			continue
-		}
-		for _, out := range f.Outputs {
-			if out.Output == "" {
-				stepFailureIdx[f.TestName] = append(stepFailureIdx[f.TestName], i)
-				needRunIDs[out.RunID] = true
-			}
-		}
-	}
-	if len(needRunIDs) == 0 {
-		return
-	}
-
-	runIDs := make([]int64, 0, len(needRunIDs))
-	for id := range needRunIDs {
-		runIDs = append(runIDs, id)
-	}
-	if len(runIDs) > maxEnrichmentRuns {
-		runIDs = runIDs[:maxEnrichmentRuns]
-	}
-
-	type fetchResult struct {
-		runID  int64
-		errors map[string]string
-	}
-	ch := make(chan fetchResult, len(runIDs))
-	for _, id := range runIDs {
-		go func(rid int64) {
-			summary, err := s.runSummary(fmt.Sprintf("%d", rid))
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "warning: run summary fetch failed for %d: %v\n", rid, err)
-				ch <- fetchResult{rid, nil}
-				return
-			}
-			ch <- fetchResult{rid, summary.TestFailures}
-		}(id)
-	}
-
-	errorsByRunAndTest := map[int64]map[string]string{}
-	for range runIDs {
-		r := <-ch
-		if r.errors != nil {
-			errorsByRunAndTest[r.runID] = r.errors
-		}
-	}
-
-	for testName, indices := range stepFailureIdx {
-		for _, idx := range indices {
-			f := &failures[idx]
-			for j := range f.Outputs {
-				if f.Outputs[j].Output != "" {
-					continue
-				}
-				if m, ok := errorsByRunAndTest[f.Outputs[j].RunID]; ok {
-					if errText, ok := m[testName]; ok && errText != "" {
-						f.Outputs[j].Output = errText
-					}
-				}
-			}
-		}
-	}
-}
 
 func enrichPipelineStepErrorsGCS(failures []RecentFailure, runs []JobRun) {
 	needRunIDs := map[int64]bool{}
