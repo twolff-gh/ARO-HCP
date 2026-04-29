@@ -31,14 +31,15 @@ var envRelease = map[string]string{
 }
 
 // defaultJobFilter returns the Sippy job name filter for an environment.
+// Matches both old periodic-ci-* and new branch-ci-* job names.
 func defaultJobFilter(env string) string {
 	switch env {
 	case "int":
-		return "periodic-integration-e2e-parallel"
+		return "integration-e2e-parallel"
 	case "stg":
-		return "periodic-stage-e2e-parallel"
+		return "stage-e2e-parallel"
 	case "prod":
-		return "periodic-prod-e2e-parallel"
+		return "prod-e2e-parallel"
 	case "dev":
 		return "e2e-parallel"
 	default:
