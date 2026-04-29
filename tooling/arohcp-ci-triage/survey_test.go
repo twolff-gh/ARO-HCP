@@ -15,7 +15,7 @@ func TestIsSyntheticTest(t *testing.T) {
 	}{
 		{"[sig-sippy] infrastructure should work", true},
 		{"[sig-sippy] anything else", true},
-		{"Job run should complete before timeout", true},
+		{"Job run should complete before timeout", false},
 		{"Customer should be able to create an HCP cluster", false},
 		{"", false},
 		{"[sig-other] something", false},
@@ -36,8 +36,8 @@ func TestRealFailureCount(t *testing.T) {
 		{
 			desc: "all synthetic",
 			run: JobRun{
-				TestFailures:    3,
-				FailedTestNames: []string{"[sig-sippy] infra", "Job run should complete before timeout", "[sig-sippy] other"},
+				TestFailures:    2,
+				FailedTestNames: []string{"[sig-sippy] infra", "[sig-sippy] other"},
 			},
 			want: 0,
 		},
@@ -45,7 +45,15 @@ func TestRealFailureCount(t *testing.T) {
 			desc: "one real failure plus synthetics",
 			run: JobRun{
 				TestFailures:    3,
-				FailedTestNames: []string{"[sig-sippy] infra", "Customer should create cluster", "Job run should complete before timeout"},
+				FailedTestNames: []string{"[sig-sippy] infra", "Customer should create cluster", "[sig-sippy] other"},
+			},
+			want: 1,
+		},
+		{
+			desc: "job timeout counts as real failure",
+			run: JobRun{
+				TestFailures:    1,
+				FailedTestNames: []string{"Job run should complete before timeout"},
 			},
 			want: 1,
 		},

@@ -18,8 +18,14 @@ const (
 	lowSampleThreshold     = 3
 	isolatedFailureCeiling = 3
 	moderateFailureCeiling = 15
-	neighborRunsLimit        = 100
-	maxEnrichmentRuns        = 200
+	neighborRunsLimit      = 100
+	maxEnrichmentRuns      = 200
+	maxProvisionFailTypes  = 3
+
+	annCascade          = "cascade"
+	annSelfResolved     = "self_resolved"
+	annChronicAllHashes = "chronic_all_hashes"
+	annDeployOnset      = "deploy_onset"
 )
 
 func runSurvey(args []string) error {
@@ -28,18 +34,20 @@ func runSurvey(args []string) error {
 	days := fs.Int("days", 7, "lookback days")
 	job := fs.String("job", "", "override job name filter")
 	test := fs.String("test", "", "filter failing tests by name substring")
+	format := fs.String("format", "full", "output format: full, compact")
 	fs.Parse(args)
 
 	s := newSippy()
 	if *env == "all" {
-		return surveyAll(s, *days, *job, *test)
+		return surveyAll(s, *days, *job, *test, *format)
 	}
-	return surveyEnv(s, *env, *days, *job, *test)
+	return surveyEnv(s, *env, *days, *job, *test, *format)
 }
 
 type surveyData struct {
 	release             string
 	runs                []JobRun
+	baselineRuns        []JobRun
 	failures            []RecentFailure
 	requestedDays       int
 	nightlyRunsExcluded int
@@ -101,11 +109,27 @@ type dataWindowJSON struct {
 }
 
 type statusJSON struct {
-	Streak       int      `json:"streak"`
-	CurrentGreen bool     `json:"current_green"`
-	StreakRegions []string `json:"streak_regions,omitempty"`
-	PassRate     float64  `json:"pass_rate"`
-	TotalRuns    int      `json:"total_runs"`
+	Streak       int              `json:"streak"`
+	CurrentGreen bool             `json:"current_green"`
+	StreakRegions []string         `json:"streak_regions,omitempty"`
+	PassRate     float64          `json:"pass_rate"`
+	TotalRuns    int              `json:"total_runs"`
+	Baseline     *baselineJSON    `json:"baseline,omitempty"`
+	FailureStage *failureStageJSON `json:"failure_stage,omitempty"`
+}
+
+type failureStageJSON struct {
+	Provision int `json:"provision"`
+	E2E       int `json:"e2e"`
+	Build     int `json:"build"`
+	Other     int `json:"other"`
+}
+
+type baselineJSON struct {
+	PassRate    float64 `json:"pass_rate"`
+	TotalRuns   int     `json:"total_runs"`
+	Days        int     `json:"days"`
+	Verdict     string  `json:"verdict"`
 }
 
 type dailyRateJSON struct {
@@ -200,6 +224,79 @@ type surveyAllJSON struct {
 	CrossEnvSignatures []crossEnvSignatureJSON `json:"cross_env_signatures,omitempty"`
 }
 
+// --- Compact output types ---
+
+type compactSurveyJSON struct {
+	Env              string                  `json:"env"`
+	Release          string                  `json:"release"`
+	Status           statusJSON              `json:"status"`
+	DataWindow       *dataWindowJSON         `json:"data_window,omitempty"`
+	DailyRates       []dailyRateJSON         `json:"daily_rates"`
+	EV2Coverage      ev2CoverageJSON         `json:"ev2_coverage"`
+	EV2HashRates     []ev2HashRateJSON       `json:"ev2_hash_rates,omitempty"`
+	FailureScaleDist *failureScaleDistJSON   `json:"failure_scale_dist,omitempty"`
+	RegionRates      []regionRateJSON        `json:"region_rates,omitempty"`
+	Runs             []compactRunJSON        `json:"runs"`
+	Signatures       []compactSignatureJSON  `json:"signatures,omitempty"`
+	EnvelopePatterns []envelopePatternJSON   `json:"envelope_patterns,omitempty"`
+	EV2Onsets        []ev2OnsetJSON          `json:"ev2_onsets,omitempty"`
+}
+
+type compactSurveyAllJSON struct {
+	Environments       []compactSurveyJSON     `json:"environments"`
+	CrossEnvFailures   []crossEnvJSON          `json:"cross_env_failures"`
+	CrossEnvSignatures []crossEnvSignatureJSON `json:"cross_env_signatures,omitempty"`
+}
+
+type compactRunJSON struct {
+	ID           int64  `json:"id"`
+	Timestamp    int64  `json:"ts"`
+	RealFailures int    `json:"fail"`
+	EV2Hash      string `json:"hash,omitempty"`
+	PullNumber   int    `json:"pr,omitempty"`
+	URL          string `json:"url"`
+}
+
+type compactSignatureJSON struct {
+	Key                 string         `json:"key"`
+	HitCount            int            `json:"hit_count"`
+	TestCount           int            `json:"test_count"`
+	TestHits            map[string]int `json:"test_hits"`
+	FirstFailure        string         `json:"first_failure,omitempty"`
+	LastFailure         string         `json:"last_failure,omitempty"`
+	BestRunID           int64          `json:"best_run_id"`
+	BestRunURL          string         `json:"best_run_url,omitempty"`
+	RepresentativeError string         `json:"representative_error,omitempty"`
+	Annotations         []string       `json:"annotations,omitempty"`
+}
+
+type envelopePatternJSON struct {
+	RunCount           int                     `json:"run_count"`
+	ExitCode           int                     `json:"exit_code"`
+	OOM                bool                    `json:"oom"`
+	ErrorChain         string                  `json:"error_chain,omitempty"`
+	LeaseWaitRange     [2]float64              `json:"lease_wait_s_range"`
+	PodSchedRange      [2]float64              `json:"pod_sched_s_range"`
+	FailedSteps        []string                `json:"failed_steps,omitempty"`
+	ProvisionFailCount int                     `json:"provision_fail_count,omitempty"`
+	ProvisionFailTypes []provisionFailTypeJSON `json:"provision_fail_types,omitempty"`
+	ARMErrorCodes      []armErrorCodeJSON      `json:"arm_error_codes,omitempty"`
+	AlertCount         int                     `json:"alert_count,omitempty"`
+	BuildLogErrSample  []string                `json:"build_log_error_sample,omitempty"`
+	ExampleRunIDs      []int64                 `json:"example_run_ids,omitempty"`
+	ExampleRunURLs     []string                `json:"example_run_urls,omitempty"`
+}
+
+type armErrorCodeJSON struct {
+	Code  string `json:"code"`
+	Count int    `json:"count"`
+}
+
+type provisionFailTypeJSON struct {
+	Pattern string `json:"pattern"`
+	Count   int    `json:"count"`
+}
+
 // --- Data fetching ---
 
 func fetchSurveyData(s *sippy, env string, days int, jobPat, testPat string) (*surveyData, error) {
@@ -221,7 +318,15 @@ func fetchSurveyData(s *sippy, env string, days int, jobPat, testPat string) (*s
 	if jobPat == "" {
 		runs, nightlyExcluded = filterNightlyRuns(runs)
 	}
-	runs = filterRunsByDate(runs, time.Now().Add(-time.Duration(days)*24*time.Hour))
+	windowCutoff := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+	var baselineRuns []JobRun
+	for _, r := range runs {
+		t := time.UnixMilli(r.Timestamp)
+		if t.Before(windowCutoff) {
+			baselineRuns = append(baselineRuns, r)
+		}
+	}
+	runs = filterRunsByDate(runs, windowCutoff)
 	stratified := false
 	if runCountCapped {
 		runs, stratified = stratifyRuns(runs, days)
@@ -257,6 +362,7 @@ func fetchSurveyData(s *sippy, env string, days int, jobPat, testPat string) (*s
 	return &surveyData{
 		release:             release,
 		runs:                runs,
+		baselineRuns:        baselineRuns,
 		failures:            failures,
 		requestedDays:       days,
 		nightlyRunsExcluded: nightlyExcluded,
@@ -288,6 +394,34 @@ func buildSurveyJSON(env string, data *surveyData) surveyJSON {
 			StreakRegions: slices.Sorted(maps.Keys(regions)),
 			PassRate:     100.0 * float64(passed) / float64(len(data.runs)),
 			TotalRuns:    len(data.runs),
+		}
+	}
+
+	if len(data.baselineRuns) >= 5 {
+		blPassed := 0
+		for _, r := range data.baselineRuns {
+			if realFailureCount(r) == 0 {
+				blPassed++
+			}
+		}
+		blRate := 100.0 * float64(blPassed) / float64(len(data.baselineRuns))
+		blDays := 0
+		if len(data.baselineRuns) > 1 {
+			oldest := time.UnixMilli(data.baselineRuns[len(data.baselineRuns)-1].Timestamp)
+			newest := time.UnixMilli(data.baselineRuns[0].Timestamp)
+			blDays = int(newest.Sub(oldest).Hours()/24) + 1
+		}
+		verdict := "normal"
+		if result.Status.PassRate < blRate-15 {
+			verdict = "DEGRADED"
+		} else if result.Status.PassRate > blRate+15 {
+			verdict = "improved"
+		}
+		result.Status.Baseline = &baselineJSON{
+			PassRate:  blRate,
+			TotalRuns: len(data.baselineRuns),
+			Days:      blDays,
+			Verdict:   verdict,
 		}
 	}
 
@@ -680,18 +814,398 @@ func buildSignatures(failures []failureJSON) []signatureJSON {
 	return result
 }
 
+// --- Compact format ---
+
+func toCompactSurvey(sj surveyJSON) compactSurveyJSON {
+	cs := compactSurveyJSON{
+		Env:              sj.Env,
+		Release:          sj.Release,
+		Status:           sj.Status,
+		DataWindow:       sj.DataWindow,
+		DailyRates:       sj.DailyRates,
+		EV2Coverage:      sj.EV2Coverage,
+		EV2HashRates:     sj.EV2HashRates,
+		FailureScaleDist: sj.FailureScaleDist,
+		RegionRates:      sj.RegionRates,
+		Runs:             buildCompactRuns(sj.Runs),
+		Signatures:       buildCompactSignatures(sj.Signatures, sj.Failures, sj.Runs, sj.DailyRates, sj.EV2HashRates, sj.EV2Onsets),
+		EnvelopePatterns: buildEnvelopePatterns(sj.Runs),
+		EV2Onsets:        sj.EV2Onsets,
+	}
+	cs.Status.FailureStage = buildFailureStage(sj.Runs)
+	return cs
+}
+
+func buildFailureStage(runs []runJSON) *failureStageJSON {
+	if len(runs) == 0 {
+		return nil
+	}
+	var fs failureStageJSON
+	for _, r := range runs {
+		if r.Envelope == nil {
+			fs.Other++
+			continue
+		}
+		if len(r.Envelope.ProvisionFails) > 0 {
+			fs.Provision++
+		} else if strings.Contains(r.Envelope.ErrorChain, "the build") || strings.Contains(r.Envelope.ErrorChain, "DockerBuild") {
+			fs.Build++
+		} else if r.RealFailures > 0 {
+			fs.E2E++
+		} else {
+			fs.Other++
+		}
+	}
+	return &fs
+}
+
+func buildCompactRuns(runs []runJSON) []compactRunJSON {
+	result := make([]compactRunJSON, 0, len(runs))
+	for _, r := range runs {
+		result = append(result, compactRunJSON{
+			ID:           r.ID,
+			Timestamp:    r.Timestamp,
+			RealFailures: r.RealFailures,
+			EV2Hash:      r.EV2Hash,
+			PullNumber:   r.PullNumber,
+			URL:          r.URL,
+		})
+	}
+	return result
+}
+
+func buildEnvelopePatterns(runs []runJSON) []envelopePatternJSON {
+	type patternKey struct {
+		exitCode int
+		oom      bool
+		chain    string
+	}
+	type patternAcc struct {
+		key              patternKey
+		runCount         int
+		leaseWaitMin     float64
+		leaseWaitMax     float64
+		podSchedMin      float64
+		podSchedMax      float64
+		failedSteps      map[string]bool
+		provisionFails   int
+		provisionTypes   map[string]int
+		armErrors        map[string]int
+		alertCount       int
+		buildLogSample   []string
+		exampleRunIDs    []int64
+		exampleRunURLs   []string
+		firstChain       string
+	}
+
+	groups := map[patternKey]*patternAcc{}
+	var order []patternKey
+
+	for _, r := range runs {
+		if r.Envelope == nil {
+			continue
+		}
+		e := r.Envelope
+		chain := e.ErrorChain
+		if len(chain) > 80 {
+			chain = chain[:80]
+		}
+		pk := patternKey{e.ExitCode, e.OOM, chain}
+
+		g, exists := groups[pk]
+		if !exists {
+			g = &patternAcc{
+				key:          pk,
+				leaseWaitMin: e.LeaseWaitSec,
+				leaseWaitMax: e.LeaseWaitSec,
+				podSchedMin:  e.PodSchedSec,
+				podSchedMax:  e.PodSchedSec,
+				failedSteps:    map[string]bool{},
+				provisionTypes: map[string]int{},
+				armErrors:      map[string]int{},
+				firstChain:     e.ErrorChain,
+			}
+			groups[pk] = g
+			order = append(order, pk)
+		}
+		g.runCount++
+
+		if e.LeaseWaitSec < g.leaseWaitMin {
+			g.leaseWaitMin = e.LeaseWaitSec
+		}
+		if e.LeaseWaitSec > g.leaseWaitMax {
+			g.leaseWaitMax = e.LeaseWaitSec
+		}
+		if e.PodSchedSec < g.podSchedMin {
+			g.podSchedMin = e.PodSchedSec
+		}
+		if e.PodSchedSec > g.podSchedMax {
+			g.podSchedMax = e.PodSchedSec
+		}
+
+		for _, s := range e.Steps {
+			if s.Failed {
+				g.failedSteps[s.Name] = true
+			}
+		}
+
+		if len(e.ProvisionFails) > 0 {
+			g.provisionFails++
+			for _, pf := range e.ProvisionFails {
+				normalized := normalizeProvisionFailure(pf.Message)
+				g.provisionTypes[normalized]++
+			}
+		}
+
+		for _, pf := range e.ProvisionFails {
+			for _, code := range extractARMErrorCodes(pf.Message) {
+				g.armErrors[code]++
+			}
+		}
+
+		if len(e.Alerts) > 0 {
+			g.alertCount++
+		}
+
+		if g.buildLogSample == nil && len(e.BuildLogErrors) > 0 {
+			g.buildLogSample = e.BuildLogErrors[:min(len(e.BuildLogErrors), 2)]
+		}
+
+		if len(g.exampleRunIDs) < 3 {
+			g.exampleRunIDs = append(g.exampleRunIDs, r.ID)
+			g.exampleRunURLs = append(g.exampleRunURLs, r.URL)
+		}
+	}
+
+	var result []envelopePatternJSON
+	for _, pk := range order {
+		g := groups[pk]
+		steps := slices.Sorted(maps.Keys(g.failedSteps))
+
+		var pfTypes []provisionFailTypeJSON
+		type pfEntry struct {
+			pattern string
+			count   int
+		}
+		var pfEntries []pfEntry
+		for p, c := range g.provisionTypes {
+			pfEntries = append(pfEntries, pfEntry{p, c})
+		}
+		slices.SortFunc(pfEntries, func(a, b pfEntry) int {
+			return cmp.Compare(b.count, a.count)
+		})
+		for i, e := range pfEntries {
+			if i >= maxProvisionFailTypes {
+				break
+			}
+			pfTypes = append(pfTypes, provisionFailTypeJSON{Pattern: e.pattern, Count: e.count})
+		}
+
+		var armCodes []armErrorCodeJSON
+		type armEntry struct {
+			code  string
+			count int
+		}
+		var armEntries []armEntry
+		for c, n := range g.armErrors {
+			armEntries = append(armEntries, armEntry{c, n})
+		}
+		slices.SortFunc(armEntries, func(a, b armEntry) int {
+			return cmp.Compare(b.count, a.count)
+		})
+		for _, e := range armEntries {
+			armCodes = append(armCodes, armErrorCodeJSON{Code: e.code, Count: e.count})
+		}
+
+		result = append(result, envelopePatternJSON{
+			RunCount:           g.runCount,
+			ExitCode:           g.key.exitCode,
+			OOM:                g.key.oom,
+			ErrorChain:         g.firstChain,
+			LeaseWaitRange:     [2]float64{g.leaseWaitMin, g.leaseWaitMax},
+			PodSchedRange:      [2]float64{g.podSchedMin, g.podSchedMax},
+			FailedSteps:        steps,
+			ProvisionFailCount: g.provisionFails,
+			ProvisionFailTypes: pfTypes,
+			ARMErrorCodes:      armCodes,
+			AlertCount:         g.alertCount,
+			BuildLogErrSample:  g.buildLogSample,
+			ExampleRunIDs:      g.exampleRunIDs,
+			ExampleRunURLs:     g.exampleRunURLs,
+		})
+	}
+
+	slices.SortFunc(result, func(a, b envelopePatternJSON) int {
+		return cmp.Compare(b.RunCount, a.RunCount)
+	})
+	return result
+}
+
+var (
+	provFailTimestampRe = regexp.MustCompile(`time=\S+\s*level=\S+\s*msg="[^"]*"\s*`)
+	provFailProwRGRe    = regexp.MustCompile(`hcp-underlay-prow-[a-z0-9-]+`)
+	armCodeUnescapedRe  = regexp.MustCompile(`"code"\s*:\s*"([A-Za-z]+)"`)
+)
+
+func extractARMErrorCodes(msg string) []string {
+	unescaped := strings.NewReplacer(`\\\"`, `"`, `\\"`, `"`, `\"`, `"`).Replace(msg)
+
+	seen := map[string]bool{}
+	var found []string
+	for _, m := range armCodeUnescapedRe.FindAllStringSubmatch(unescaped, -1) {
+		code := m[1]
+		if !seen[code] && len(code) > 3 {
+			seen[code] = true
+			found = append(found, code)
+		}
+	}
+	return found
+}
+
+func normalizeProvisionFailure(msg string) string {
+	msg = provFailTimestampRe.ReplaceAllString(msg, "")
+	msg = provFailProwRGRe.ReplaceAllString(msg, "{PROW_RG}")
+	msg = strings.Join(strings.Fields(msg), " ")
+	if len(msg) > 150 {
+		msg = msg[:150]
+	}
+	return msg
+}
+
+func buildCompactSignatures(sigs []signatureJSON, failures []failureJSON, runs []runJSON, dailyRates []dailyRateJSON, hashRates []ev2HashRateJSON, onsets []ev2OnsetJSON) []compactSignatureJSON {
+	result := make([]compactSignatureJSON, 0, len(sigs))
+
+	testCounts := map[string]int{}
+	for _, f := range failures {
+		testCounts[f.TestName] = f.FailureCount
+	}
+
+	midDate := ""
+	if len(dailyRates) > 2 {
+		midDate = dailyRates[len(dailyRates)/2].Date
+	}
+
+	allHashesFailing := len(hashRates) > 1
+	for _, h := range hashRates {
+		if h.Total >= 2 && h.PassRate >= 50 {
+			allHashesFailing = false
+			break
+		}
+	}
+
+	onsetTests := map[string]bool{}
+	for _, o := range onsets {
+		onsetTests[o.TestName] = true
+	}
+
+	provRunPRs := map[int64]int{}
+	for _, r := range runs {
+		if r.Envelope != nil && len(r.Envelope.ProvisionFails) > 0 && r.PullNumber != 0 {
+			provRunPRs[int64(r.PullNumber)] = 1
+		}
+	}
+	provPRCount := len(provRunPRs)
+	provRunCount := 0
+	for _, r := range runs {
+		if r.Envelope != nil && len(r.Envelope.ProvisionFails) > 0 {
+			provRunCount++
+		}
+	}
+
+	cascadeRuns := 0
+	for _, r := range runs {
+		if r.RealFailures > 15 {
+			cascadeRuns++
+		}
+	}
+
+	for _, sig := range sigs {
+		th := make(map[string]int, len(sig.Tests))
+		for _, t := range sig.Tests {
+			th[t] = testCounts[t]
+		}
+		cs := compactSignatureJSON{
+			Key:                 sig.Key,
+			HitCount:            sig.HitCount,
+			TestCount:           sig.TestCount,
+			TestHits:            th,
+			FirstFailure:        sig.FirstFailure,
+			LastFailure:         sig.LastFailure,
+			BestRunID:           sig.BestRunID,
+			BestRunURL:          sig.BestRunURL,
+			RepresentativeError: sig.RepresentativeError,
+		}
+
+		var annotations []string
+
+		if cascadeRuns > len(runs)/2 && sig.TestCount > 5 {
+			annotations = append(annotations, annCascade)
+		}
+
+		if midDate != "" && sig.LastFailure != "" && sig.LastFailure[:10] <= midDate && sig.HitCount >= 5 {
+			annotations = append(annotations, annSelfResolved)
+		}
+
+		if allHashesFailing && len(hashRates) > 1 {
+			annotations = append(annotations, annChronicAllHashes)
+		}
+
+		for t := range th {
+			if onsetTests[t] {
+				annotations = append(annotations, annDeployOnset)
+				break
+			}
+		}
+
+		if provRunCount > len(runs)*3/10 && provPRCount > 5 {
+			hasProvTest := false
+			for _, r := range runs {
+				if r.Envelope == nil || len(r.Envelope.ProvisionFails) == 0 {
+					continue
+				}
+				for t := range th {
+					for _, f := range r.Envelope.ProvisionFails {
+						if strings.Contains(f.Name, t) || strings.Contains(t, "provision") || strings.Contains(t, "pipeline") {
+							hasProvTest = true
+							break
+						}
+					}
+					if hasProvTest {
+						break
+					}
+				}
+				if hasProvTest {
+					break
+				}
+			}
+			if hasProvTest || (sig.HitCount > len(runs)/3 && sig.TestCount > 3) {
+				annotations = append(annotations, fmt.Sprintf("provision_spread:%d_prs", provPRCount))
+			}
+		}
+
+		if len(annotations) > 0 {
+			cs.Annotations = annotations
+		}
+		result = append(result, cs)
+	}
+	return result
+}
+
 // --- Dispatch ---
 
-func surveyEnv(s *sippy, env string, days int, jobPat, testPat string) error {
+func surveyEnv(s *sippy, env string, days int, jobPat, testPat, format string) error {
 	data, err := fetchSurveyData(s, env, days, jobPat, testPat)
 	if err != nil {
 		return err
 	}
 	sj := buildSurveyJSON(env, data)
+	if format == "compact" {
+		return json.NewEncoder(os.Stdout).Encode(toCompactSurvey(sj))
+	}
 	return json.NewEncoder(os.Stdout).Encode(sj)
 }
 
-func surveyAll(s *sippy, days int, jobPat, testPat string) error {
+func surveyAll(s *sippy, days int, jobPat, testPat, format string) error {
 	envs := []string{"int", "stg", "prod"}
 	type envResult struct {
 		env      string
@@ -711,7 +1225,7 @@ func surveyAll(s *sippy, days int, jobPat, testPat string) error {
 			ch <- envResult{env: env, survey: sj, failures: data.failures}
 		}(e)
 	}
-	results := make(map[string]envResult)
+	results := make(map[string]envResult, len(envs))
 	for range envs {
 		r := <-ch
 		if r.err != nil {
@@ -799,6 +1313,29 @@ func surveyAll(s *sippy, days int, jobPat, testPat string) error {
 		}
 		return cmp.Compare(a.Key, b.Key)
 	})
+
+	if format == "compact" {
+		crossEnvByKey := map[string]int{}
+		for _, cs := range crossEnvSigs {
+			crossEnvByKey[cs.Key] = cs.EnvCount
+		}
+		var compactEnvs []compactSurveyJSON
+		for _, e := range envResults {
+			ce := toCompactSurvey(e)
+			for i, sig := range ce.Signatures {
+				if n, ok := crossEnvByKey[sig.Key]; ok {
+					ce.Signatures[i].Annotations = append(ce.Signatures[i].Annotations, fmt.Sprintf("cross_env:%d", n))
+				}
+			}
+			compactEnvs = append(compactEnvs, ce)
+		}
+		result := compactSurveyAllJSON{
+			Environments:       compactEnvs,
+			CrossEnvFailures:   crossEnv,
+			CrossEnvSignatures: crossEnvSigs,
+		}
+		return json.NewEncoder(os.Stdout).Encode(result)
+	}
 
 	result := surveyAllJSON{
 		Environments:       envResults,
@@ -969,7 +1506,7 @@ func detectEV2Onsets(failures []RecentFailure, runs []JobRun) []ev2OnsetJSON {
 }
 
 func isSyntheticTest(name string) bool {
-	return strings.HasPrefix(name, syntheticTestPrefix) || name == syntheticTestTimeout
+	return strings.HasPrefix(name, syntheticTestPrefix)
 }
 
 func realFailureCount(r JobRun) int {

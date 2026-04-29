@@ -19,6 +19,8 @@ func main() {
 		err = runDig(args[1:])
 	case "triage":
 		err = runTriage(args[1:])
+	case "watch":
+		err = runWatch(args[1:])
 	default:
 		printUsage()
 		os.Exit(1)
@@ -38,6 +40,7 @@ Commands:
     --days=7                           lookback period
     --job=PATTERN                      override job filter
     --test=PATTERN                     filter tests by name
+    --format=full|compact              output format
 
   triage <run-id> [flags]            Single-run structural extraction
     --context-days=3                   neighbor runs for flake detection
@@ -45,5 +48,8 @@ Commands:
   dig <run-id> <what>                Fetch single artifact from a run
     tests, steptime, provision, alerts, events,
     pool, podinfo, metrics, links, azure <test>
+
+  watch [flags]                      Fleet monitor with per-PR advisories
+    --days=5                           lookback period
 `)
 }

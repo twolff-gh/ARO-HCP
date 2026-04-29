@@ -51,7 +51,7 @@ func (g *gcs) fetch(rawURL string) ([]byte, error) {
 	}
 	resp, err := g.c.Get(rawURL)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("fetching %s: %w", rawURL, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == 404 {

@@ -59,6 +59,11 @@ func TestNormalizeError(t *testing.T) {
 			"error with extra spaces",
 		},
 		{
+			"normalizes resource name after 'failed for'",
+			`failed to cleanup resource group: ordered cleanup workflow failed for nodepool-update-nodes-7thk9t: Delete virtual networks`,
+			`failed to cleanup resource group: ordered cleanup workflow failed for {NAME}: Delete virtual networks`,
+		},
+		{
 			"groups same errors with different cluster names",
 			`fail [github.com/Azure/ARO-HCP/test/e2e/cluster_create_nodepool_osdisk.go:80]: Unexpected error: <*fmt.wrapErrors | 0xc0011e66c0>: failed to create HCP cluster hcp-cluster-np-128, caused by: timeout '45.000000' minutes exceeded`,
 			`failed to create cluster {NAME}, caused by: timeout N minutes exceeded`,
@@ -90,6 +95,25 @@ func TestNormalizeError_SameSignature(t *testing.T) {
 	}
 	if len(sigs) != 1 {
 		t.Errorf("expected all 3 errors to normalize to same signature, got %d signatures:", len(sigs))
+		for s := range sigs {
+			t.Logf("  %q", s)
+		}
+	}
+}
+
+func TestNormalizeError_CleanupSameSignature(t *testing.T) {
+	errors := []string{
+		`failed to cleanup resource group: ordered cleanup workflow failed for nodepool-update-nodes-7thk9t: Delete virtual networks: failed`,
+		`failed to cleanup resource group: ordered cleanup workflow failed for customer-rg-kqq7ms: Delete virtual networks: failed`,
+		`failed to cleanup resource group: ordered cleanup workflow failed for complex-cilium-kv-mkmbnm: Delete virtual networks: failed`,
+	}
+
+	sigs := map[string]bool{}
+	for _, e := range errors {
+		sigs[normalizeError(e)] = true
+	}
+	if len(sigs) != 1 {
+		t.Errorf("expected all 3 cleanup errors to normalize to same signature, got %d signatures:", len(sigs))
 		for s := range sigs {
 			t.Logf("  %q", s)
 		}

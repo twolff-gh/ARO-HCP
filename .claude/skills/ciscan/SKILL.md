@@ -5,12 +5,12 @@ description: "CI fleet assessment — wide-first signal discovery and correlatio
 
 # CI Fleet Assessment
 
-Discover, correlate, and prioritize CI failure signals across environments. You are the wide net — you find what's worth investigating and produce a fleet assessment.
+Discover, correlate, and prioritize CI failure signals across environments. You are the diagnostician — you assess pre-computed structural evidence and produce a fleet assessment with hypotheses and recommendations.
 
-Your tool is `survey`, which provides three layers of signal:
-1. **Signatures** — pre-grouped error patterns (what's failing)
-2. **Envelopes** — per-run structural data from GCS artifacts (why it's failing)
-3. **Fleet metrics** — pass rates, deploy correlation, regional/temporal patterns (where and when)
+Your tool is `survey --format=compact`, which provides:
+1. **Signatures** with **annotations** — pre-grouped error patterns with deterministic structural observations
+2. **Envelope patterns** — deduplicated infrastructure signal (one per failure mode, not per run)
+3. **Fleet metrics** — pass rates, deploy correlation, regional/temporal patterns
 
 ## Arguments
 
@@ -38,117 +38,94 @@ If the user doesn't specify a scope, ask: "Periodic (production health) or presu
 go build -o /tmp/arohcp-ci-triage ./tooling/arohcp-ci-triage/
 ```
 
-All output is JSON. GCS artifacts are cached locally — first scan fetches from remote, repeat scans are sub-second.
+All output is JSON. GCS artifacts are cached locally — repeat scans are sub-second.
 
 ## Workflow
 
-### Step 1: Gather fleet data
+### Phase 1: Gather
+
+Run survey commands with `--format=compact`. All commands in parallel.
 
 **periodic scope:**
 ```bash
-/tmp/arohcp-ci-triage survey --env=all --days=7
-/tmp/arohcp-ci-triage survey --env=int --job=nightly --days=7
-/tmp/arohcp-ci-triage survey --env=prod --job=nightly --days=7
+/tmp/arohcp-ci-triage survey --format=compact --env=all --days=7
+/tmp/arohcp-ci-triage survey --format=compact --env=int --job=nightly --days=7
+/tmp/arohcp-ci-triage survey --format=compact --env=prod --job=nightly --days=7
 ```
-Run all three in parallel.
 
 **presubmit scope:**
 ```bash
-/tmp/arohcp-ci-triage survey --env=dev --days=5
+/tmp/arohcp-ci-triage survey --format=compact --env=dev --days=5
 ```
 
-**all scope:** Run periodic, nightly, and presubmit surveys in parallel.
+**all scope:** Both periodic + presubmit in parallel.
 
-### Step 2: Check data reliability
+### Phase 2: Assess
 
-- **`data_window.truncated`** — if true, Sippy returned less data than requested. State the actual window and do not present pass rates as representative.
-- **`ev2_coverage`** — if `with_ev2 / total < 50%`, deploy correlation is unreliable. Note it.
+Read the compact data in this order:
 
-### Step 3: Read signatures — the pre-grouped problems
+**1. Fleet health** — `status` (pass_rate, streak, baseline, failure_stage) and `daily_rates` (trends). Compare `pass_rate` to `baseline.pass_rate` — if baseline verdict is "DEGRADED", say so definitively. If "normal", the current rate is within historical range. Use `failure_stage` to lead with whether failures are provision (infra) or E2E (tests).
 
-The `signatures` array groups failures by normalized error pattern. Each signature is one distinct problem — different tests that fail the same way appear in one signature.
+**2. Data reliability** — `data_window.truncated` (incomplete data?), `ev2_coverage` (deploy correlation reliable?).
 
-Read signatures first: `key` is the normalized error, `hit_count` is total failures, `test_count` is how many distinct tests, `tests` lists them. `representative_error` has the full (unnormalized) error text from one instance.
+**3. Signatures with annotations** — each signature is one failure pattern. Read:
+- `key` — normalized error (for grouping only, values stripped)
+- `representative_error` — full unmodified error text (the real signal)
+- `hit_count`, `test_count`, `test_hits` (map of test name → per-test failure count) — scope and distribution of impact
+- `annotations` — pre-computed structural observations (see below)
+- `first_failure`, `last_failure` — temporal bounds
 
-For pipeline step failures, signatures use `extracted_errors` (ERROR/FATAL lines with ARM error codes) rather than the raw log output. The `key` for a pipeline step will show the actual ARM failure, not "Running step."
+**4. Annotations** — factual labels on signatures, NOT severity judgments. You decide significance:
 
-**`cross_env_signatures`** (in `--env=all`) groups signatures that appear in multiple environments. Same error pattern in STG and PROD = shared root cause. Different patterns = investigate separately.
-
-The `failures` array still exists with per-test detail — use it when you need to look up a specific test's `best_run_id` or per-run outputs.
-
-### Step 4: Read envelopes — the structural picture
-
-Every failed run in `runs[]` has an `envelope` with data extracted from GCS artifacts. This tells you HOW and WHY the run failed, not just WHAT error text it produced.
-
-**Read envelopes across all failing runs and compare:**
-
-| Field | What it tells you | What to look for |
+| Annotation | Meaning | Your job |
 |---|---|---|
-| `exit_code` | Pod-level outcome | 1 = test failure, 137 = OOM kill |
-| `oom` | Memory kill | `true` = investigate memory, not test logic |
-| `error_chain` | Compact failure summary from ci-operator | The full pod failure chain in ~500 bytes |
-| `lease_wait_s` | Boskos lease acquisition | >60s = contention, >300s = severe |
-| `pod_sched_s` | Pod scheduling latency | >30s = cluster pressure |
-| `steps[]` | CI pipeline step results | Which step failed, how long, error snippet |
-| `build_log_errors` | ERROR/FATAL lines from build log | ARM errors, resource contention |
-| `build_log_steps` | Step SUCCEEDED/FAILED lines | Step durations, which passed vs failed |
-| `alerts[]` | Azure Monitor alerts (presubmit) | KubeVersionMismatch, BackendControllerRetryHotLoop |
-| `provision_failures[]` | Pipeline step failures (presubmit) | ARM deployment errors with step name |
+| `cascade` | Median >15 failures/run. Single root cause amplified. | Treat as 1 problem, not N test failures |
+| `self_resolved` | Last hit in first half of window AND ≥5 hits | Verify: is it really gone, or paused? |
+| `cross_env:N` | Same error in N environments | N=3 likely code/infra, N=2 investigate |
+| `provision_spread:N_prs` | Provision failures across N unique PRs | Infrastructure issue blocking developers |
+| `chronic_all_hashes` | All EV2 hashes <50% pass rate | NOT deploy-correlated, chronic issue |
+| `deploy_onset` | Pass→fail at a hash transition | Deploy regression candidate |
 
-**Cross-run patterns from envelopes:**
-- All runs same `error_chain` → shared mechanism
-- All runs `lease_wait_s < 2` and `pod_sched_s = 0` → infra is fine, failure is in tests/services
-- `oom: true` on any run → memory issue, different investigation path
-- `steps[].failed` consistent across runs → same CI step failing
-- `provision_failures` with same ARM error code across PRs → infra issue, not PR code
+**Annotations are observations, not conclusions.** Override when domain knowledge contradicts — e.g., `chronic_all_hashes` on a nightly job may be expected because OCP candidate channels are inherently less stable.
 
-### Step 5: Correlate findings
+**5. Envelope patterns** — deduplicated infrastructure signal. Each pattern represents N runs with the same failure mode:
+- `run_count` — how many runs share this pattern
+- `exit_code`, `oom` — pod-level outcome
+- `error_chain` — full ci-operator failure chain
+- `lease_wait_s_range`, `pod_sched_s_range` — [min, max] infrastructure latency
+- `failed_steps` — which CI pipeline steps failed
+- `provision_fail_types` — top-3 normalized provision failure types with counts
+- `build_log_error_sample` — first 2 ERROR/FATAL lines
 
-For each signature, correlate using fleet metrics AND envelopes:
+**6. Deploy correlation** — `ev2_hash_rates` (per-deploy pass rates), `ev2_onsets` (pass→fail transitions).
 
-- **Cross-env** — check `cross_env_signatures`. Multi-env = code/infra. Single-env = environment-specific.
-- **Deploy correlation** — check `ev2_onsets` first. If a test has an onset, the commits between those hashes are the suspect set. Also check `ev2_hash_rates` — all hashes failing = not deploy-correlated (chronic). One hash at 0% = suspect deploy.
-- **Region** — check `region_rates`. Skewed pass rate = region-scoped.
-- **Trend** — check `daily_rates`. Getting worse, improving, or flat?
-- **Infra vs test** — check envelopes: `exit_code`, `oom`, `lease_wait_s`, `pod_sched_s`. If all normal, the failure is in the test/service layer, not CI infrastructure.
+**7. Cross-env** — `cross_env_signatures` (same error across environments), `cross_env_failures` (same test across environments).
 
-**For presubmit:**
-- **PR concentration** — check `pull_number` on failing runs. Spread across many PRs = infra. Concentrated = PR-specific.
-- **Provision failures** — check `runs[].envelope.provision_failures`. Same ARM error across PRs = infra provisioning issue. Highest urgency — blocks all PR testing.
-- **Alerts** — check `runs[].envelope.alerts`. Alerts firing across runs = cluster health issue.
+### Phase 3: Diagnose and report
 
-### Step 6: Prioritize and report
+For each signature, apply diagnostic reasoning:
 
-Order findings by impact. Consider: hit count, environment count, presubmit blocking, infrastructure vs test-level.
+- **Merge related signatures** — same pattern in 3 envs = 1 finding, not 3
+- **Assess legitimacy** — use `baseline.pass_rate` to determine if the current state is a regression. If `baseline.verdict` is "DEGRADED", this IS a regression, not normal variance. Don't say "INCONCLUSIVE" when the baseline gives a definitive answer.
+- **Distinguish mechanisms** — provision_fail_types shows whether failures are ARM throttling, MSI connectivity, EventGrid, etc. Don't collapse distinct mechanisms
+- **Identify low-volume qualitative signals** — a 4-hit PROD-only finding can be more important than a 100-hit presubmit cascade
+- **Express uncertainty** — "INCONCLUSIVE: need baseline" is a valid assessment. Don't force CRITICAL on everything with high hit counts
 
-**Every failure must appear in the report.** Cluster by signature, list ALL tests per finding, prefix with `[PROD]`, `[STG]`, `[INT]`, or `[PRESUBMIT]`.
+**For presubmit PR analysis:** Check `runs[].pr` field. Failures spread across many PRs = infrastructure. Concentrated on 1-2 PRs = PR-specific.
 
-**Evidence from envelopes is REQUIRED.** For each finding, cite the structural evidence:
-- "All 9 PROD runs: exit_code=1, oom=false, lease_wait <2s — infra healthy"
-- "error_chain: ContainerFailed exit code 1 — test failure, not crash"
-- "steps[]: prod-e2e-parallel at 7200s (full timeout) — tests ran to ceiling"
-
-**When to launch `/cidig`:** Only when you need per-test depth that envelopes don't provide:
-- Azure API trace for a specific test (which Azure call was slow?)
-- ARM operation timing tree (which deployment step took 25 minutes?)
-- Test output context for "Interrupted by User" errors (what was the test doing?)
-
-Most fleet assessments should NOT need cidig. The envelope IS the investigation.
+**Every failure must appear in the report.** Cluster by signature.
 
 ## Signal Absence as Evidence
 
-What you DON'T see is diagnostic:
-- No `cross_env_signatures` for an error → environment-specific
-- `ev2_hash_rates` ALL hashes failing → not deploy-correlated
-- All envelopes show `lease_wait_s < 2` → no Boskos contention
-- All envelopes show `oom: false` → no memory issues
+- No `cross_env_signatures` → environment-specific
+- `chronic_all_hashes` annotation → not deploy-correlated
+- All envelope patterns show `lease_wait_s_range` < [0, 2] → no Boskos contention
+- All envelope patterns show `oom: false` → no memory issues
 - `region_rates` uniform → not region-specific
-- `failure_scale_dist` mostly "none" → isolated regressions, not systemic
-- `provision_failures` empty on presubmit → provisioning succeeded, failure is in E2E tests
+- `provision_fail_types` empty → provisioning succeeded, failure in E2E tests
 
 ## Cross-Run-Type Correlation
 
-Patterns that span run types reveal root cause layer:
 - **Periodic timeout + presubmit provision failure** → shared infra
 - **Same signature in periodic + presubmit** → code bug, not environment
 - **Periodic fails, presubmit passes** → environment or deploy issue
@@ -157,37 +134,35 @@ Patterns that span run types reveal root cause layer:
 
 ## Command Budget
 
-**periodic:** survey --env=all (1) + nightly INT (1) + nightly PROD (1) = **3 max**
-**presubmit:** survey --env=dev (1) = **1**
-**all:** Both = **4 max**
+**periodic:** 3 max. **presubmit:** 1. **all:** 4 max.
 
-## Data Reference
+## Data Reference (compact format)
 
-### Per-environment data (`survey --env=all`)
+### Per-environment data
 
-- **status**: `{streak, current_green, pass_rate, total_runs}`
+- **status**: `{streak, current_green, pass_rate, total_runs, baseline, failure_stage}`
+  - `baseline`: `{pass_rate, total_runs, days, verdict}` — rolling pass rate from runs BEFORE the current window. `verdict` is "DEGRADED" (>15pp drop), "improved" (>15pp gain), or "normal". Use this to distinguish real regressions from normal variance.
 - **data_window**: `{requested_days, actual_days, truncated}`
 - **daily_rates**: `[{date, pass, total}]`
 - **ev2_coverage**: `{with_ev2, total}`
 - **ev2_hash_rates**: `[{hash, pass, fail, total, pass_rate, is_cron}]`
 - **failure_scale_dist**: `{none, isolated, moderate, cascade}`
 - **region_rates**: `[{region, pass, total, pass_rate, low_sample}]`
-- **runs**: FAILED RUNS ONLY. Each run has:
-  - `id, timestamp, overall_result, real_failures, ev2_hash, region, cluster, pull_number, sha, url`
-  - `envelope`: `{exit_code, oom, error_chain, lease_wait_s, pod_sched_s, steps[], build_log_errors[], build_log_steps[], alerts[], provision_failures[]}`
-  - `envelope.steps[]`: `{name, duration_seconds, failed, error_snippet}`
-  - `envelope.provision_failures[]`: `{name, time_seconds, message}` (presubmit only)
-  - `envelope.alerts[]`: `{name, severity, state}` (presubmit only)
-- **failures**: `[{test_name, failure_count, first_failure, last_failure, last_pass, best_run_id, outputs[{run_id, error, extracted_errors}]}]`
-  - Sorted by frequency desc. Outputs use signature-based deduplication — cascade failures share slots.
-  - `extracted_errors` contains ERROR/FATAL lines for pipeline steps. Prefer over `error` for pipeline step diagnosis.
-- **signatures**: `[{key, hit_count, test_count, tests[], first_failure, last_failure, best_run_id, representative_error}]`
-  - Pre-grouped by normalized error. One signature = one problem regardless of test count.
-  - Sorted by hit_count desc.
+- **runs**: Minimal metadata only. `[{id, ts, fail, hash, pr, url}]`
+- **status.failure_stage**: `{provision, e2e, build, other}` — counts of failed runs by stage. Provision=ARM deployment failed before tests. E2E=tests ran but failed. Build=image build failed. Use for the quick "what kind of failure?" answer.
+- **signatures**: `[{key, hit_count, test_count, test_hits:{test_name: count}, first_failure, last_failure, best_run_id, best_run_url, representative_error, annotations[]}]`
+  - `test_hits` is a map of test name → per-test failure count. Use for "affected tests" tables sorted by count.
+- **envelope_patterns**: `[{run_count, exit_code, oom, error_chain, lease_wait_s_range, pod_sched_s_range, failed_steps[], provision_fail_count, provision_fail_types[{pattern, count}], arm_error_codes[{code, count}], alert_count, build_log_error_sample[], example_run_ids[], example_run_urls[]}]`
+  - `arm_error_codes` names specific Azure ARM errors: RoleAssignmentLimitExceeded (quota), ValidateVMScaleSetOperation (throttling), DeploymentFailed (generic), etc.
 - **ev2_onsets**: `[{test_name, last_pass_hash, first_fail_hash, last_pass_run, first_fail_run, last_pass_time, first_fail_time}]`
-  - Pre-computed pass→fail EV2 hash transitions. Different hashes = deploy regression candidate. Empty = chronic issue (no hash transition in window).
 - **cross_env_failures**: `[{test_name, env_count, environments[{env, hits, run_id}]}]`
 - **cross_env_signatures**: `[{key, env_count, total_hits, environments[{env, hits, run_id}]}]`
+
+### What's NOT in compact format
+
+- **No `failures[]` array** — signatures cover 100% of tests via `test_hits` map. Use `representative_error` for error detail.
+- **No per-run envelopes** — replaced by `envelope_patterns` (deduplicated, one per failure mode). Cite patterns, not individual runs.
+- **No per-run region/cluster/SHA** — available in full format if needed.
 
 ## Domain Knowledge
 
@@ -203,13 +178,11 @@ Patterns that span run types reveal root cause layer:
 
 **EV2 annotations:** `ev2.rollout/ARO-HCP` = deploy hash, `ev2.rollout/region` = target region. Periodic only.
 
-**Nightly runs:** Separate section. High expected failure rate (candidate OCP). Query with `--job=nightly`. Note nightly-specific failures.
+**Nightly runs:** Separate section. High expected failure rate (candidate OCP). Query with `--job=nightly`. Note nightly-specific failures. OCP candidate channels are inherently less stable — don't flag nightly failures as Critical without evidence of regression.
 
 ## Output
 
-### Step 7: Write the report as markdown
-
-Write the full report directly in the conversation as markdown. This IS the deliverable. Structure it exactly as follows:
+Write the full report as markdown. Structure:
 
 ```markdown
 # CI Fleet Assessment — [scope] · [window] · [date]
@@ -219,11 +192,8 @@ Write the full report directly in the conversation as markdown. This IS the deli
 | Env | Pass Rate | Runs | Trend | Severity |
 |---|---|---|---|---|
 | INT | 72.7% | 11 | `▇▇▅▇▇▇▅▇` | OK |
-| STG | 55.6% | 9 | `▇▃▅▁▇▇` | Warning |
-| PROD | 18.2% | 11 | `▁▁▁▅` | Critical |
-| Presubmit | 28.4% | 335 | `▃▃▁▅▅▁` | Critical |
 
-Sparkline: one bar per day from daily_rates. Height = pass%. ▁<20% ▃20-50% ▅50-80% ▇>80%
+Sparkline: one bar per day from daily_rates. ▁<20% ▃20-50% ▅50-80% ▇>80%
 Severity: <30% = Critical, 30-60% = Warning, >60% = OK
 
 <details>
@@ -232,8 +202,6 @@ Severity: <30% = Critical, 30-60% = Warning, >60% = OK
 | Env | Run | Time | Hash | Failures | Prow |
 |---|---|---|---|---|---|
 | PROD | 2048175228365836288 | 04/24 18:17 | a16d7bc6c464 | 29 | [link](url) |
-| PROD | 2048537620723535872 | 04/25 01:00 | a16d7bc6c464 | 38 | [link](url) |
-| ... | | | | | |
 
 </details>
 
@@ -245,83 +213,68 @@ Severity: <30% = Critical, 30-60% = Warning, >60% = OK
 
 | Dimension | Value |
 |---|---|
-| Trend | Persistent / improving / worsening |
+| Trend | sparkline + description |
 | Tests affected | N tests |
 | Cross-env | envs and hit counts |
 | Deploy correlated | Yes/No — cite ev2_onsets or ev2_hash_rates |
 
 **Evidence chain:**
-1. [signatures:key] "failed to create cluster {NAME}..." — 297x across 32 tests
-2. [envelope:exit_code] All 9 PROD runs: 1 — test failure, not OOM or crash
-3. [envelope:oom] false on all runs
-4. [envelope:lease_wait_s] max 1.1s — no Boskos contention
-5. [envelope:pod_sched_s] 0s on all periodic — no scheduling pressure
-6. [envelope:error_chain] "prod-e2e-parallel test steps failed: ContainerFailed exit code 1"
-7. [ev2_hash_rates] a16d7bc6c464=25%, 5276b688af51=0%, 3e5c4d579c24=0% — all hashes fail
-8. [cross_env_signatures] same key in STG (145x) + PROD (152x)
+1. [signatures:key] "..." — Nx across N tests
+2. [signatures:annotations] cascade, cross_env:3
+3. [envelope_patterns] N runs: exit_code=1, oom=false, error_chain="..."
+4. [envelope_patterns:lease_wait_s_range] [0.9, 1.6] — no contention
+5. [envelope_patterns:provision_fail_types] cluster: 59x, geneva: 27x
+6. [ev2_hash_rates] hash1=25%, hash2=0% — all hashes fail
+7. [cross_env_signatures] same key in STG (145x) + PROD (152x)
 
-**Hypothesis:** [what's happening and why]
+**Hypothesis:** [interpretation — connect evidence to root cause]
 
 **Action:** [what to do next]
 
 <details>
-<summary>Affected tests (N) — sorted by count</summary>
+<summary>Affected tests (N)</summary>
 
 | Count | Env | Test | Error |
 |---|---|---|---|
-| 11x | PROD | no-CNI private cluster with private key vault and cilium CNI | 45-min timeout |
-| 10x | PROD | custom node pool osDisk size | 45-min timeout |
-| 7x | STG | custom node pool osDisk size | 45-min timeout |
-| ... | | | |
+| 11x | PROD | test name | error summary |
 
 </details>
 
 <details>
-<summary>Deploy timeline — PROD</summary>
+<summary>Deploy timeline</summary>
 
 | Time | Hash | Result | Detail |
 |---|---|---|---|
 | 04/23 00:08 | `3e5c4d579c24` | FAIL | 9 failures |
-| 04/23 23:08 | `5276b688af51` | FAIL | 7 failures — **new deploy** |
-| 04/24 18:17 | `a16d7bc6c464` | FAIL | 29 failures — **new deploy** |
+| 04/24 18:17 | `a16d7bc6c464` | FAIL | 29 — **new deploy** |
 
 </details>
 
 <details>
-<summary>Top runs for this finding</summary>
+<summary>Top runs</summary>
 
 | Run | Env | Failures | Prow |
 |---|---|---|---|
-| 2048175228365836288 | PROD | 34 | [link](prow_url) |
-| 2048537620723535872 | STG | 37 | [link](prow_url) |
+| 2048175228365836288 | PROD | 34 | [link](url) |
 
 </details>
 
-[Repeat for each finding, ordered by priority]
-
 ## Nightly
 
-| Env | Pass Rate | Runs | Trend | Detail |
-|---|---|---|---|---|
-| INT | 0% | 2 | `▁▁` | All cascade. Same timeout as periodic. |
-| PROD | 0% | 5 | `▁▁▁▁` | All cascade. Candidate OCP. |
+[Separate nightly analysis if applicable]
 
 ## Coverage Gaps
 
-- [gap 1]
-- [gap 2]
+[Note any data reliability issues]
 ```
 
 **Rules:**
-- **Sparklines:** Build from `daily_rates`. One char per day. `▁` <20%, `▃` 20-50%, `▅` 50-80%, `▇` >80%.
-- **All runs table:** List EVERY failed run with env, run ID, timestamp, EV2 hash, failure count, and Prow link. Prow URL is in `runs[].url`.
-- **Evidence chain:** Numbered list. Each item cites the source field and quotes the value. The LLM reasoning that connects the evidence to the finding is in the hypothesis, NOT in the evidence chain. Evidence = facts. Hypothesis = interpretation.
-- **Top runs:** For each finding, list the 2-3 runs with the most failures for that signature. Include Prow links from `best_run_url` or `runs[].url`.
-- **Affected tests:** EVERY test in the signature, sorted by count. Include env tag, test name, and error summary.
-- Every failure must appear in a finding. Cluster by signature.
-- Deploy timeline: one row per run in timestamp order. Bold hash transitions.
-- If ev2_onsets detected a hash transition, cite it in the evidence chain.
-
+- Evidence chain = numbered facts citing source fields. Hypothesis = interpretation. Keep them separate.
+- Cite `envelope_patterns` (aggregated) not individual run envelopes.
+- Cite `annotations` in evidence chains — they're pre-computed structural facts.
+- All failed runs table: every failed run from `runs[]`.
+- Affected tests: every test from `signatures[].test_hits`, sorted by count descending.
+- Deploy timeline: runs sorted by timestamp, bold hash transitions.
 
 ## Error Handling
 
@@ -331,4 +284,4 @@ Severity: <30% = Critical, 30-60% = Warning, >60% = OK
 | `data_window.truncated` | State actual window. Don't present as full baseline. |
 | No failures | Fleet healthy. Report. |
 | EV2 coverage < 50% | Note — deploy correlation unreliable. |
-| Envelope missing on a run | Note — GCS artifacts unavailable for that run. |
+| `envelope_patterns` empty | Note — GCS artifacts unavailable. |

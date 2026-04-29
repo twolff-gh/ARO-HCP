@@ -34,6 +34,8 @@ var normalizers = []struct {
 	{regexp.MustCompile(`(?:HCP |for )cluster [a-z0-9]+-[a-z0-9-]+`), "cluster {NAME}"},
 	{regexp.MustCompile(`resource group \S+`), "resource group {NAME}"},
 	{regexp.MustCompile(`NodePool \S+`), "NodePool {NAME}"},
+	// Generic test resource names after "failed for" (e.g. cleanup workflow names)
+	{regexp.MustCompile(`failed for [a-z0-9][-a-z0-9]*:`), "failed for {NAME}:"},
 
 	// Subscription IDs
 	{regexp.MustCompile(`/subscriptions/[0-9a-f-]{36}`), "/subscriptions/{SUB}"},
