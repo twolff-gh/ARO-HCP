@@ -40,7 +40,7 @@ Commands:
     --days=7                           lookback period
     --job=PATTERN                      override job filter
     --test=PATTERN                     filter tests by name
-    --format=full|compact              output format
+    --format=full|compact|summary       output format
 
   triage <run-id> [flags]            Single-run structural extraction
     --context-days=3                   neighbor runs for flake detection

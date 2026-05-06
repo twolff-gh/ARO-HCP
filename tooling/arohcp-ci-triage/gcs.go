@@ -69,7 +69,8 @@ func (g *gcs) fetch(rawURL string) ([]byte, error) {
 			if decompressed, err := io.ReadAll(gzReader); err == nil {
 				data = decompressed
 			} else {
-				fmt.Fprintf(os.Stderr, "warning: gzip decompression failed for %s: %v\n", rawURL, err)
+				gzReader.Close()
+				return nil, fmt.Errorf("gzip decompression failed for %s: %w", rawURL, err)
 			}
 			gzReader.Close()
 		}

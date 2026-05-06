@@ -32,8 +32,9 @@ type TriageResult struct {
 	Events      *EventsSummary     `json:"events,omitempty"`
 	Pool        *PoolSummary       `json:"pool,omitempty"`
 	Provision   *ProvisionSummary  `json:"provision,omitempty"`
-	Alerts      []AlertSummary     `json:"alerts,omitempty"`
-	Azure       []AzureTestSummary `json:"azure,omitempty"`
+	Alerts            []AlertSummary     `json:"alerts,omitempty"`
+	Azure             []AzureTestSummary `json:"azure,omitempty"`
+	LROClassification string             `json:"lro_classification,omitempty"`
 }
 
 type RunContext struct {
@@ -152,6 +153,7 @@ func runTriage(args []string) error {
 	} else if data, err := dig.store.artifact(dig.base, "artifacts/junit_operator.xml"); err == nil {
 		entries := parseJUnitForTriage(data)
 		for _, tc := range entries {
+			result.TotalTests++
 			if tc.err != "" {
 				result.FailedTests++
 				result.Failures = append(result.Failures, TriageFailure{
@@ -215,16 +217,27 @@ func runTriage(args []string) error {
 		}
 	}
 
-	// 12. AZURE ERRORS (per failing test)
-	for _, f := range result.Failures {
+	// 12. AZURE ERRORS + LRO STATES (per failing test)
+	// For cascade runs (>15 failures), sample first 3 to avoid excessive GCS fetches.
+	azureLimit := len(result.Failures)
+	if azureLimit > 3 && result.FailedTests > 15 {
+		azureLimit = 3
+	}
+	for i, f := range result.Failures {
+		if i >= azureLimit {
+			break
+		}
 		azurePath := fmt.Sprintf("artifacts/%s/%s/artifacts/%s/azure.log",
 			dig.step, dig.container, sanitizeTest(f.Name))
 		if data, err := dig.store.artifact(dig.base, azurePath); err == nil {
-			if summary := extractAzureSummary(data, f.Name); summary != nil && len(summary.ResponseErrors) > 0 {
-				result.Azure = append(result.Azure, *summary)
+			if summary := extractAzureSummary(data, f.Name); summary != nil {
+				if len(summary.ResponseErrors) > 0 || len(summary.LROStates) > 0 {
+					result.Azure = append(result.Azure, *summary)
+				}
 			}
 		}
 	}
+	result.LROClassification = classifyLRO(result.Azure)
 
 	return json.NewEncoder(os.Stdout).Encode(result)
 }
@@ -395,6 +408,34 @@ func isDiagnosticallyEmpty(err string) bool {
 	return err == "" ||
 		strings.Contains(err, "Interrupted by User") ||
 		strings.Contains(err, "Deserialization Error")
+}
+
+// classifyLRO derives a cluster-timeout sub-classification from sampled
+// azure.log LRO state distributions. Classifies per-test and returns
+// the dominant classification:
+//   - "accepted_stuck": HCP cluster LRO never reached Provisioning (CS layer blocked)
+//   - "provisioning_stuck": LRO reached Provisioning but never Succeeded (HyperShift/Maestro)
+//   - "": not enough data or healthy pattern
+func classifyLRO(azure []AzureTestSummary) string {
+	acceptedStuck := 0
+	provisioningStuck := 0
+	for _, a := range azure {
+		acc := a.LROStates["Accepted"]
+		prov := a.LROStates["Provisioning"]
+		succ := a.LROStates["Succeeded"]
+		if acc > 50 && prov == 0 {
+			acceptedStuck++
+		} else if prov > 50 && succ < 4 {
+			provisioningStuck++
+		}
+	}
+	if acceptedStuck > 0 && acceptedStuck >= provisioningStuck {
+		return "accepted_stuck"
+	}
+	if provisioningStuck > 0 {
+		return "provisioning_stuck"
+	}
+	return ""
 }
 
 // buildErrorGroups deduplicates failures by normalized error signature.

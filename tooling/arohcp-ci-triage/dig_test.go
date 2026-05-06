@@ -10,18 +10,27 @@ func TestStepContainer(t *testing.T) {
 	tests := []struct {
 		job      string
 		wantStep string
-		wantCtr  string
+		wantCtrs []string
 	}{
-		{"periodic-ci-Azure-ARO-HCP-main-periodic-integration-e2e-parallel", "integration-e2e-parallel", "aro-hcp-test-persistent"},
-		{"periodic-ci-Azure-ARO-HCP-main-periodic-stage-e2e-parallel", "stage-e2e-parallel", "aro-hcp-test-persistent"},
-		{"periodic-ci-Azure-ARO-HCP-main-periodic-prod-e2e-parallel", "prod-e2e-parallel", "aro-hcp-test-persistent"},
-		{"pull-ci-Azure-ARO-HCP-main-e2e-parallel", "e2e-parallel", "aro-hcp-test-local-run"},
-		{"periodic-ci-Azure-ARO-HCP-main-periodic-prod-e2e-parallel-ocp-nightly", "prod-e2e-parallel", "aro-hcp-test-persistent"},
+		{"periodic-ci-Azure-ARO-HCP-main-periodic-integration-e2e-parallel", "integration-e2e-parallel", []string{"aro-hcp-test-persistent"}},
+		{"periodic-ci-Azure-ARO-HCP-main-periodic-stage-e2e-parallel", "stage-e2e-parallel", []string{"aro-hcp-test-persistent"}},
+		{"periodic-ci-Azure-ARO-HCP-main-periodic-prod-e2e-parallel", "prod-e2e-parallel", []string{"aro-hcp-test-persistent"}},
+		{"pull-ci-Azure-ARO-HCP-main-e2e-parallel", "e2e-parallel", []string{"aro-hcp-test-local", "aro-hcp-test-local-run"}},
+		{"periodic-ci-Azure-ARO-HCP-main-periodic-prod-e2e-parallel-ocp-nightly", "prod-e2e-parallel", []string{"aro-hcp-test-persistent"}},
 	}
 	for _, tt := range tests {
-		step, ctr := stepContainer(tt.job)
-		if step != tt.wantStep || ctr != tt.wantCtr {
-			t.Errorf("stepContainer(%q) = (%q, %q), want (%q, %q)", tt.job, step, ctr, tt.wantStep, tt.wantCtr)
+		step, ctrs := stepContainer(tt.job)
+		if step != tt.wantStep {
+			t.Errorf("stepContainer(%q) step = %q, want %q", tt.job, step, tt.wantStep)
+		}
+		if len(ctrs) != len(tt.wantCtrs) {
+			t.Errorf("stepContainer(%q) containers = %v, want %v", tt.job, ctrs, tt.wantCtrs)
+			continue
+		}
+		for i, c := range ctrs {
+			if c != tt.wantCtrs[i] {
+				t.Errorf("stepContainer(%q) containers[%d] = %q, want %q", tt.job, i, c, tt.wantCtrs[i])
+			}
 		}
 	}
 }

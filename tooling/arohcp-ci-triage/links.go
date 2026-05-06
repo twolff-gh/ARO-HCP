@@ -5,9 +5,8 @@ import (
 	"strings"
 )
 
-// TestLink maps a test name to its resource group and Kusto links.
+// TestLink maps a resource group to its Kusto cluster link.
 type TestLink struct {
-	TestName      string `json:"test_name"`
 	ResourceGroup string `json:"resource_group"`
 	KustoCluster  string `json:"kusto_cluster,omitempty"`
 }

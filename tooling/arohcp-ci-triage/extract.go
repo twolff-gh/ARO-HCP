@@ -172,8 +172,7 @@ type StepTiming struct {
 	Failed       bool    `json:"failed"`
 	BaselineSec  float64 `json:"baseline_seconds,omitempty"`
 	Ratio        float64 `json:"ratio,omitempty"`
-	ExitCode     int     `json:"exit_code,omitempty"`
-	ErrorSnippet string  `json:"error_snippet,omitempty"`
+	ErrorSnippet string `json:"error_snippet,omitempty"`
 }
 
 type rawStep struct {
@@ -219,22 +218,34 @@ func enrichStepsWithJUnit(steps []StepTiming, junitData []byte) {
 		suites.Suites = []junitTestSuite{suite}
 	}
 
-	failMap := map[string]junitTestCase{}
+	type failEntry struct {
+		name string
+		tc   junitTestCase
+	}
+	var failures []failEntry
 	for _, suite := range suites.Suites {
 		for _, tc := range suite.Cases {
 			if tc.effectiveFailure() != nil {
-				failMap[tc.Name] = tc
+				failures = append(failures, failEntry{tc.Name, tc})
 			}
 		}
 	}
 
 	for i := range steps {
-		for name, tc := range failMap {
-			if strings.Contains(name, steps[i].Name) || strings.Contains(steps[i].Name, name) {
-				if f := tc.effectiveFailure(); f != nil {
-					steps[i].ErrorSnippet = stripANSI(f.errorMessage())
-				}
+		var best *failEntry
+		for j := range failures {
+			fe := &failures[j]
+			if fe.name == steps[i].Name {
+				best = fe
 				break
+			}
+			if best == nil && (strings.Contains(fe.name, steps[i].Name) || strings.Contains(steps[i].Name, fe.name)) {
+				best = fe
+			}
+		}
+		if best != nil {
+			if f := best.tc.effectiveFailure(); f != nil {
+				steps[i].ErrorSnippet = stripANSI(f.errorMessage())
 			}
 		}
 	}
@@ -483,14 +494,20 @@ func extractAlertsSummary(data []byte) []AlertSummary {
 
 // --- Azure summary extraction ---
 
-// AzureTestSummary counts Azure API response errors from a test's azure.log.
+// AzureTestSummary counts Azure API response errors and LRO state transitions
+// from a test's azure.log.
 type AzureTestSummary struct {
 	TestName       string         `json:"test_name"`
 	TotalLines     int            `json:"total_lines"`
 	ResponseErrors map[string]int `json:"response_errors,omitempty"`
+	LROStates      map[string]int `json:"lro_states,omitempty"`
+	LROPollerTypes []string       `json:"lro_poller_types,omitempty"`
 }
 
-var azureErrorCodeRe = regexp.MustCompile(`ERROR CODE:\s*([A-Za-z]+)`)
+var (
+	azureErrorCodeRe = regexp.MustCompile(`ERROR CODE:\s*([A-Za-z]+)`)
+	lroPollerTypeRe  = regexp.MustCompile(`Poller\[([^\]]+)\]`)
+)
 
 func extractAzureSummary(data []byte, testName string) *AzureTestSummary {
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
@@ -498,18 +515,42 @@ func extractAzureSummary(data []byte, testName string) *AzureTestSummary {
 		TestName:   testName,
 		TotalLines: len(lines),
 	}
+	seenPollerTypes := map[string]bool{}
 	for _, line := range lines {
-		if !strings.Contains(line, `"ResponseError"`) {
-			continue
+		if strings.Contains(line, `"ResponseError"`) {
+			if result.ResponseErrors == nil {
+				result.ResponseErrors = map[string]int{}
+			}
+			code := "unknown"
+			if m := azureErrorCodeRe.FindStringSubmatch(line); len(m) > 1 {
+				code = m[1]
+			}
+			result.ResponseErrors[code]++
 		}
-		if result.ResponseErrors == nil {
-			result.ResponseErrors = map[string]int{}
+		if strings.Contains(line, `"LongRunningOperation"`) {
+			if strings.Contains(line, `"State `) {
+				// Extract state name: "State Accepted", "State Provisioning", etc.
+				if idx := strings.Index(line, `"State `); idx >= 0 {
+					rest := line[idx+7:]
+					if end := strings.IndexByte(rest, '"'); end > 0 {
+						state := rest[:end]
+						if result.LROStates == nil {
+							result.LROStates = map[string]int{}
+						}
+						result.LROStates[state]++
+					}
+				}
+			}
+			if strings.Contains(line, "BEGIN PollUntilDone") {
+				if m := lroPollerTypeRe.FindStringSubmatch(line); len(m) > 1 {
+					pt := m[1]
+					if !seenPollerTypes[pt] {
+						seenPollerTypes[pt] = true
+						result.LROPollerTypes = append(result.LROPollerTypes, pt)
+					}
+				}
+			}
 		}
-		code := "unknown"
-		if m := azureErrorCodeRe.FindStringSubmatch(line); len(m) > 1 {
-			code = m[1]
-		}
-		result.ResponseErrors[code]++
 	}
 	return result
 }

@@ -717,6 +717,24 @@ func TestEnrichLastPass_NoPopulatedRuns(t *testing.T) {
 	}
 }
 
+func TestEnrichLastPass_GreenRunCounts(t *testing.T) {
+	now := time.Now()
+	runs := []JobRun{
+		{ID: 1, Timestamp: now.UnixMilli(), FailedTestNames: []string{"testA"}},
+		{ID: 2, Timestamp: now.Add(-1 * time.Hour).UnixMilli(), TestFailures: 0},
+	}
+	failures := []RecentFailure{
+		{TestName: "testA", LastPass: ""},
+	}
+
+	enrichLastPass(failures, runs)
+
+	expected := time.UnixMilli(runs[1].Timestamp).UTC().Format(time.RFC3339)
+	if failures[0].LastPass != expected {
+		t.Errorf("green run should count as last_pass, got %q want %q", failures[0].LastPass, expected)
+	}
+}
+
 func TestBuildDataWindow(t *testing.T) {
 	now := time.Now()
 	runs := []JobRun{
@@ -1451,6 +1469,73 @@ func TestBuildSignatures(t *testing.T) {
 			t.Errorf("signatures should be sorted by hit count desc: %d < %d", sigs[0].HitCount, sigs[1].HitCount)
 		}
 	})
+}
+
+func TestToSummarySurvey(t *testing.T) {
+	sj := surveyJSON{
+		Env:     "int",
+		Release: "aro-integration",
+		Status: statusJSON{
+			Streak:       3,
+			CurrentGreen: true,
+			PassRate:     85.7,
+			TotalRuns:    7,
+			Baseline:     &baselineJSON{PassRate: 90.0, TotalRuns: 100, Days: 30, Verdict: "normal"},
+			FailureStage: &failureStageJSON{Provision: 1, E2E: 2},
+		},
+		DataWindow: &dataWindowJSON{RequestedDays: 7, ActualDays: 7, Truncated: false},
+		DailyRates: []dailyRateJSON{{Date: "2026-05-01", Pass: 3, Total: 4}},
+		Runs: []runJSON{
+			{ID: 1, RealFailures: 2},
+			{ID: 2, RealFailures: 0},
+		},
+		Signatures: []signatureJSON{
+			{Key: "error A normalized", HitCount: 10, TestCount: 2, Tests: []string{"test1", "test1b"}},
+			{Key: "error B normalized", HitCount: 7, TestCount: 1, Tests: []string{"test2"}},
+			{Key: "error C normalized", HitCount: 5, TestCount: 1, Tests: []string{"test3"}},
+			{Key: "error D normalized", HitCount: 3, TestCount: 1, Tests: []string{"test4"}},
+			{Key: "error E normalized", HitCount: 1, TestCount: 1, Tests: []string{"test5"}},
+		},
+		Failures: []failureJSON{
+			{TestName: "test1", FailureCount: 10, Outputs: []failureOutputJSON{{Error: "error A"}}},
+			{TestName: "test2", FailureCount: 7, Outputs: []failureOutputJSON{{Error: "error B"}}},
+			{TestName: "test3", FailureCount: 5, Outputs: []failureOutputJSON{{Error: "error C"}}},
+			{TestName: "test4", FailureCount: 3, Outputs: []failureOutputJSON{{Error: "error D"}}},
+			{TestName: "test5", FailureCount: 1, Outputs: []failureOutputJSON{{Error: "error E"}}},
+		},
+	}
+
+	ss := toSummarySurvey(sj)
+
+	if ss.Env != "int" {
+		t.Errorf("env = %q, want int", ss.Env)
+	}
+	if ss.Status.PassRate != 85.7 {
+		t.Errorf("pass_rate = %f, want 85.7", ss.Status.PassRate)
+	}
+	if ss.Status.Baseline == nil || ss.Status.Baseline.Verdict != "normal" {
+		t.Error("baseline should be preserved")
+	}
+	if ss.Status.FailureStage != nil {
+		t.Error("failure_stage should be nil in summary (depends on envelopes)")
+	}
+	if ss.DataWindow == nil || ss.DataWindow.Truncated {
+		t.Error("data_window should be present and not truncated")
+	}
+	if len(ss.DailyRates) != 1 {
+		t.Errorf("daily_rates len = %d, want 1", len(ss.DailyRates))
+	}
+	if len(ss.TopSignatures) != 3 {
+		t.Errorf("top_signatures len = %d, want 3 (capped from 5)", len(ss.TopSignatures))
+	}
+	if ss.TopSignatures[0].HitCount < ss.TopSignatures[1].HitCount {
+		t.Error("top_signatures should be sorted by hit count desc")
+	}
+	for _, sig := range ss.TopSignatures {
+		if sig.Key == "" {
+			t.Error("signature key should not be empty")
+		}
+	}
 }
 
 

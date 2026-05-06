@@ -52,9 +52,11 @@ func newDigContext(runID string) (*digContext, error) {
 	if base == "" {
 		return nil, fmt.Errorf("cannot derive GCS path from %s", summary.URL)
 	}
-	step, ctr := stepContainer(summary.Name)
+	store := newGCS()
+	step, candidates := stepContainer(summary.Name)
+	ctr := resolveContainer(store, base, step, candidates)
 	return &digContext{
-		out: os.Stdout, store: newGCS(),
+		out: os.Stdout, store: store,
 		base: base, step: step, container: ctr, summary: summary,
 	}, nil
 }
@@ -116,17 +118,33 @@ func isPresubmitJob(name string) bool {
 	return strings.Contains(name, "pull-ci-")
 }
 
-func stepContainer(job string) (string, string) {
+func stepContainer(job string) (string, []string) {
 	switch {
 	case strings.Contains(job, "integration"):
-		return "integration-e2e-parallel", "aro-hcp-test-persistent"
+		return "integration-e2e-parallel", []string{"aro-hcp-test-persistent"}
 	case strings.Contains(job, "stage"):
-		return "stage-e2e-parallel", "aro-hcp-test-persistent"
+		return "stage-e2e-parallel", []string{"aro-hcp-test-persistent"}
 	case strings.Contains(job, "prod"):
-		return "prod-e2e-parallel", "aro-hcp-test-persistent"
+		return "prod-e2e-parallel", []string{"aro-hcp-test-persistent"}
 	default:
-		return "e2e-parallel", "aro-hcp-test-local-run"
+		return "e2e-parallel", []string{"aro-hcp-test-local", "aro-hcp-test-local-run"}
 	}
+}
+
+// resolveContainer probes GCS to find which container name has artifacts.
+// Returns the first candidate whose artifact directory exists, or the first
+// candidate as a default.
+func resolveContainer(store *gcs, base, step string, candidates []string) string {
+	if len(candidates) == 1 {
+		return candidates[0]
+	}
+	for _, c := range candidates {
+		prefix := base + fmt.Sprintf("artifacts/%s/%s/artifacts/", step, c)
+		if dirs, _, err := store.listDir(prefix); err == nil && len(dirs) > 0 {
+			return c
+		}
+	}
+	return candidates[0]
 }
 
 func (d *digContext) testArtifactPrefix() string {
@@ -347,16 +365,8 @@ func (d *digContext) testsFromJUnit(data []byte, source string) error {
 
 // --- Step graph fallback ---
 
-type stepGraphEntry struct {
-	Name   string   `json:"name"`
-	Dur    int64    `json:"duration"`
-	Failed bool     `json:"failed"`
-	Deps   []string `json:"dependencies"`
-}
-
 type noResultsJSON struct {
-	Message     string           `json:"message"`
-	FailedSteps []stepGraphEntry `json:"failed_steps,omitempty"`
+	Message string `json:"message"`
 }
 
 type eventsJSON struct {
@@ -372,11 +382,6 @@ type podinfoJSON struct {
 
 type messageJSON struct {
 	Message string `json:"message"`
-}
-
-type rawJSON struct {
-	Path    string `json:"path"`
-	Content string `json:"content"`
 }
 
 // --- Azure ---

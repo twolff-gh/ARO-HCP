@@ -53,6 +53,7 @@ type surveyData struct {
 	nightlyRunsExcluded int
 	runCountCapped      bool
 	stratified          bool
+	skipEnvelopes       bool
 }
 
 // --- JSON output types ---
@@ -69,8 +70,11 @@ type surveyJSON struct {
 	RegionRates      []regionRateJSON      `json:"region_rates,omitempty"`
 	Runs             []runJSON             `json:"runs"`
 	Failures         []failureJSON         `json:"failures"`
-	Signatures       []signatureJSON       `json:"signatures,omitempty"`
-	EV2Onsets        []ev2OnsetJSON        `json:"ev2_onsets,omitempty"`
+	Signatures         []signatureJSON       `json:"signatures,omitempty"`
+	EV2Onsets          []ev2OnsetJSON        `json:"ev2_onsets,omitempty"`
+	NeverFailingCount  int                   `json:"never_failing_count,omitempty"`
+	TestSuiteSize      int                   `json:"test_suite_size,omitempty"`
+	CascadeSurvivors []string              `json:"cascade_survivors,omitempty"`
 }
 
 type ev2OnsetJSON struct {
@@ -238,14 +242,45 @@ type compactSurveyJSON struct {
 	RegionRates      []regionRateJSON        `json:"region_rates,omitempty"`
 	Runs             []compactRunJSON        `json:"runs"`
 	Signatures       []compactSignatureJSON  `json:"signatures,omitempty"`
-	EnvelopePatterns []envelopePatternJSON   `json:"envelope_patterns,omitempty"`
-	EV2Onsets        []ev2OnsetJSON          `json:"ev2_onsets,omitempty"`
+	EnvelopePatterns   []envelopePatternJSON   `json:"envelope_patterns,omitempty"`
+	EV2Onsets          []ev2OnsetJSON          `json:"ev2_onsets,omitempty"`
+	NeverFailingCount  int                     `json:"never_failing_count,omitempty"`
+	TestSuiteSize      int                     `json:"test_suite_size,omitempty"`
+	CascadeSurvivors []string                `json:"cascade_survivors,omitempty"`
 }
 
 type compactSurveyAllJSON struct {
 	Environments       []compactSurveyJSON     `json:"environments"`
 	CrossEnvFailures   []crossEnvJSON          `json:"cross_env_failures"`
 	CrossEnvSignatures []crossEnvSignatureJSON `json:"cross_env_signatures,omitempty"`
+}
+
+// --- Summary output types ---
+
+type summarySurveyJSON struct {
+	Env           string                 `json:"env"`
+	Release       string                 `json:"release"`
+	Status        statusJSON             `json:"status"`
+	DataWindow    *summaryWindowJSON     `json:"data_window,omitempty"`
+	DailyRates    []dailyRateJSON        `json:"daily_rates"`
+	TopSignatures []summarySignatureJSON `json:"top_signatures,omitempty"`
+}
+
+type summaryWindowJSON struct {
+	Truncated bool `json:"truncated"`
+	Empty     bool `json:"empty,omitempty"`
+}
+
+type summarySignatureJSON struct {
+	Key         string   `json:"key"`
+	HitCount    int      `json:"hit_count"`
+	TestCount   int      `json:"test_count"`
+	Annotations []string `json:"annotations,omitempty"`
+}
+
+type summarySurveyAllJSON struct {
+	Environments           []summarySurveyJSON `json:"environments"`
+	CrossEnvSignatureCount int                 `json:"cross_env_signature_count"`
 }
 
 type compactRunJSON struct {
@@ -432,11 +467,31 @@ func buildSurveyJSON(env string, data *surveyData) surveyJSON {
 	result.FailureScaleDist = buildFailureScaleDist(data.runs)
 	result.RegionRates = buildRegionRates(data.runs)
 	result.Runs = buildRunsJSON(data.runs)
-	enrichRunEnvelopes(result.Runs, data.runs)
-	backfillErrorsFromEnvelopes(data.failures, result.Runs)
+	if !data.skipEnvelopes {
+		enrichRunEnvelopes(result.Runs, data.runs)
+		backfillErrorsFromEnvelopes(data.failures, result.Runs)
+	}
 	result.Failures = buildFailuresJSON(data.failures, data.runs)
 	result.Signatures = buildSignatures(result.Failures)
 	result.EV2Onsets = detectEV2Onsets(data.failures, data.runs)
+	result.CascadeSurvivors = buildCascadeSurvivors(data.runs)
+
+	uniqueTests := map[string]bool{}
+	for _, sig := range result.Signatures {
+		for _, t := range sig.Tests {
+			uniqueTests[t] = true
+		}
+	}
+	if len(uniqueTests) > 0 && len(data.runs) > 0 {
+		maxFails := 0
+		for _, r := range data.runs {
+			if r.TestFailures > maxFails {
+				maxFails = r.TestFailures
+			}
+		}
+		result.TestSuiteSize = max(len(uniqueTests), maxFails)
+		result.NeverFailingCount = result.TestSuiteSize - len(uniqueTests)
+	}
 
 	return result
 }
@@ -833,7 +888,41 @@ func toCompactSurvey(sj surveyJSON) compactSurveyJSON {
 		EV2Onsets:        sj.EV2Onsets,
 	}
 	cs.Status.FailureStage = buildFailureStage(sj.Runs)
+	cs.NeverFailingCount = sj.NeverFailingCount
+	cs.TestSuiteSize = sj.TestSuiteSize
+	cs.CascadeSurvivors = sj.CascadeSurvivors
 	return cs
+}
+
+const maxSummarySignatures = 3
+
+func toSummarySurvey(sj surveyJSON) summarySurveyJSON {
+	cs := toCompactSurvey(sj)
+	status := cs.Status
+	status.FailureStage = nil
+	ss := summarySurveyJSON{
+		Env:        cs.Env,
+		Release:    cs.Release,
+		Status:     status,
+		DailyRates: cs.DailyRates,
+	}
+	if cs.DataWindow != nil {
+		ss.DataWindow = &summaryWindowJSON{
+			Truncated: cs.DataWindow.Truncated,
+			Empty:     cs.DataWindow.Empty,
+		}
+	}
+	limit := min(maxSummarySignatures, len(cs.Signatures))
+	for i := range limit {
+		sig := cs.Signatures[i]
+		ss.TopSignatures = append(ss.TopSignatures, summarySignatureJSON{
+			Key:         sig.Key,
+			HitCount:    sig.HitCount,
+			TestCount:   sig.TestCount,
+			Annotations: sig.Annotations,
+		})
+	}
+	return ss
 }
 
 func buildFailureStage(runs []runJSON) *failureStageJSON {
@@ -857,6 +946,53 @@ func buildFailureStage(runs []runJSON) *failureStageJSON {
 		}
 	}
 	return &fs
+}
+
+func buildCascadeSurvivors(runs []JobRun) []string {
+	cascadeCount := 0
+	for _, r := range runs {
+		if realFailureCount(r) > moderateFailureCeiling {
+			cascadeCount++
+		}
+	}
+	if cascadeCount < 2 {
+		return nil
+	}
+
+	allFailed := map[string]bool{}
+	var cascadeSets []map[string]bool
+	for _, r := range runs {
+		if realFailureCount(r) <= moderateFailureCeiling || len(r.FailedTestNames) == 0 {
+			continue
+		}
+		fs := map[string]bool{}
+		for _, name := range r.FailedTestNames {
+			if !isSyntheticTest(name) {
+				fs[name] = true
+				allFailed[name] = true
+			}
+		}
+		cascadeSets = append(cascadeSets, fs)
+	}
+	if len(cascadeSets) < 2 {
+		return nil
+	}
+
+	var sometimesPassing []string
+	for name := range allFailed {
+		failedInAll := true
+		for _, fs := range cascadeSets {
+			if !fs[name] {
+				failedInAll = false
+				break
+			}
+		}
+		if !failedInAll {
+			sometimesPassing = append(sometimesPassing, name)
+		}
+	}
+	slices.Sort(sometimesPassing)
+	return sometimesPassing
 }
 
 func buildCompactRuns(runs []runJSON) []compactRunJSON {
@@ -1146,7 +1282,7 @@ func buildCompactSignatures(sigs []signatureJSON, failures []failureJSON, runs [
 			annotations = append(annotations, annSelfResolved)
 		}
 
-		if allHashesFailing && len(hashRates) > 1 {
+		if allHashesFailing && len(hashRates) > 1 && sig.HitCount >= 3 {
 			annotations = append(annotations, annChronicAllHashes)
 		}
 
@@ -1198,11 +1334,18 @@ func surveyEnv(s *sippy, env string, days int, jobPat, testPat, format string) e
 	if err != nil {
 		return err
 	}
-	sj := buildSurveyJSON(env, data)
-	if format == "compact" {
-		return json.NewEncoder(os.Stdout).Encode(toCompactSurvey(sj))
+	if format == "summary" {
+		data.skipEnvelopes = true
 	}
-	return json.NewEncoder(os.Stdout).Encode(sj)
+	sj := buildSurveyJSON(env, data)
+	switch format {
+	case "compact":
+		return json.NewEncoder(os.Stdout).Encode(toCompactSurvey(sj))
+	case "summary":
+		return json.NewEncoder(os.Stdout).Encode(toSummarySurvey(sj))
+	default:
+		return json.NewEncoder(os.Stdout).Encode(sj)
+	}
 }
 
 func surveyAll(s *sippy, days int, jobPat, testPat, format string) error {
@@ -1213,6 +1356,7 @@ func surveyAll(s *sippy, days int, jobPat, testPat, format string) error {
 		failures []RecentFailure
 		err      error
 	}
+	skipEnv := format == "summary"
 	ch := make(chan envResult, len(envs))
 	for _, e := range envs {
 		go func(env string) {
@@ -1221,6 +1365,7 @@ func surveyAll(s *sippy, days int, jobPat, testPat, format string) error {
 				ch <- envResult{env: env, err: err}
 				return
 			}
+			data.skipEnvelopes = skipEnv
 			sj := buildSurveyJSON(env, data)
 			ch <- envResult{env: env, survey: sj, failures: data.failures}
 		}(e)
@@ -1313,6 +1458,27 @@ func surveyAll(s *sippy, days int, jobPat, testPat, format string) error {
 		}
 		return cmp.Compare(a.Key, b.Key)
 	})
+
+	if format == "summary" {
+		var summaryEnvs []summarySurveyJSON
+		for _, e := range envResults {
+			se := toSummarySurvey(e)
+			for i, sig := range se.TopSignatures {
+				for _, cs := range crossEnvSigs {
+					if cs.Key == sig.Key {
+						se.TopSignatures[i].Annotations = append(se.TopSignatures[i].Annotations, fmt.Sprintf("cross_env:%d", cs.EnvCount))
+						break
+					}
+				}
+			}
+			summaryEnvs = append(summaryEnvs, se)
+		}
+		result := summarySurveyAllJSON{
+			Environments:           summaryEnvs,
+			CrossEnvSignatureCount: len(crossEnvSigs),
+		}
+		return json.NewEncoder(os.Stdout).Encode(result)
+	}
 
 	if format == "compact" {
 		crossEnvByKey := map[string]int{}
@@ -1416,6 +1582,9 @@ func filterNightlyRuns(runs []JobRun) ([]JobRun, int) {
 }
 
 func computeStreak(runs []JobRun) (streak int, currentGreen bool) {
+	if len(runs) == 0 {
+		return 0, true
+	}
 	currentGreen = realFailureCount(runs[0]) == 0
 	for _, r := range runs {
 		if (realFailureCount(r) == 0) == currentGreen {
@@ -1696,7 +1865,8 @@ func enrichMissingErrors(failures []RecentFailure, runs []JobRun) {
 			continue
 		}
 		go func(id int64, b, job string) {
-			step, container := stepContainer(job)
+			step, candidates := stepContainer(job)
+			container := resolveContainer(store, b, step, candidates)
 			prefix := b + "artifacts/" + step + "/" + container + "/artifacts/"
 			_, files, err := store.listDir(prefix)
 			if err != nil {
@@ -1880,7 +2050,13 @@ func enrichLastPass(failures []RecentFailure, runs []JobRun) {
 		}
 		name := failures[i].TestName
 		for _, r := range runs {
+			if realFailureCount(r) == 0 {
+				// Genuinely green run — all tests passed.
+				failures[i].LastPass = time.UnixMilli(r.Timestamp).UTC().Format(time.RFC3339)
+				break
+			}
 			if len(r.FailedTestNames) == 0 {
+				// Run had failures but Sippy didn't populate the list — skip.
 				continue
 			}
 			if !slices.Contains(r.FailedTestNames, name) {

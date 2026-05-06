@@ -38,9 +38,9 @@ type watchPRAdvisoryJSON struct {
 type prAcc struct {
 	runs         map[int64]bool
 	passed       int
-	infra        int
-	build        int
-	test         int
+	infraRuns    map[int64]bool
+	buildRuns    map[int64]bool
+	testRuns     map[int64]bool
 	topSigHits   map[string]int
 	latestTS     int64
 	latestPassed bool
@@ -95,7 +95,10 @@ func runWatch(args []string) error {
 		}
 		acc, ok := prData[pr]
 		if !ok {
-			acc = &prAcc{runs: map[int64]bool{}, topSigHits: map[string]int{}}
+			acc = &prAcc{
+				runs: map[int64]bool{}, topSigHits: map[string]int{},
+				infraRuns: map[int64]bool{}, buildRuns: map[int64]bool{}, testRuns: map[int64]bool{},
+			}
 			prData[pr] = acc
 		}
 		acc.runs[r.ID] = true
@@ -141,11 +144,11 @@ func runWatch(args []string) error {
 
 			switch cls {
 			case "infra":
-				acc.infra++
+				acc.infraRuns[o.RunID] = true
 			case "build":
-				acc.build++
+				acc.buildRuns[o.RunID] = true
 			default:
-				acc.test++
+				acc.testRuns[o.RunID] = true
 			}
 		}
 	}
@@ -182,9 +185,9 @@ func runWatch(args []string) error {
 			PR:           ps.pr,
 			TotalRuns:    len(ps.acc.runs),
 			PassedRuns:   ps.acc.passed,
-			InfraFails:   ps.acc.infra,
-			BuildFails:   ps.acc.build,
-			TestFails:    ps.acc.test,
+			InfraFails:   len(ps.acc.infraRuns),
+			BuildFails:   len(ps.acc.buildRuns),
+			TestFails:    len(ps.acc.testRuns),
 			Verdict:      classifyPRVerdict(ps.acc),
 			TopSignature: topSig,
 		})
@@ -282,7 +285,10 @@ func runWatchPR(s *sippy, prNum int, days int) error {
 	}
 
 	// Classify this PR's failures
-	acc := &prAcc{runs: map[int64]bool{}, topSigHits: map[string]int{}}
+	acc := &prAcc{
+		runs: map[int64]bool{}, topSigHits: map[string]int{},
+		infraRuns: map[int64]bool{}, buildRuns: map[int64]bool{}, testRuns: map[int64]bool{},
+	}
 	for _, r := range prRuns {
 		passed := realFailureCount(r) == 0
 		if r.Timestamp > acc.latestTS {
@@ -298,15 +304,16 @@ func runWatchPR(s *sippy, prNum int, days int) error {
 			if isSyntheticTest(name) {
 				continue
 			}
-			cls := classifySignatureKey(name)
-			acc.topSigHits[name]++
+			sigKey := normalizeError(name)
+			cls := classifySignatureKey(sigKey)
+			acc.topSigHits[sigKey]++
 			switch cls {
 			case "infra":
-				acc.infra++
+				acc.infraRuns[r.ID] = true
 			case "build":
-				acc.build++
+				acc.buildRuns[r.ID] = true
 			default:
-				acc.test++
+				acc.testRuns[r.ID] = true
 			}
 		}
 	}
@@ -328,9 +335,9 @@ func runWatchPR(s *sippy, prNum int, days int) error {
 			PR:           prNum,
 			TotalRuns:    len(prRuns),
 			PassedRuns:   acc.passed,
-			InfraFails:   acc.infra,
-			BuildFails:   acc.build,
-			TestFails:    acc.test,
+			InfraFails:   len(acc.infraRuns),
+			BuildFails:   len(acc.buildRuns),
+			TestFails:    len(acc.testRuns),
 			Verdict:      classifyPRVerdict(acc),
 			TopSignature: topSig,
 		},
@@ -370,23 +377,26 @@ func classifySignatureKey(key string) string {
 }
 
 func classifyPRVerdict(acc *prAcc) string {
-	totalFails := acc.infra + acc.build + acc.test
+	infra := len(acc.infraRuns)
+	build := len(acc.buildRuns)
+	test := len(acc.testRuns)
+	totalFails := infra + build + test
 	if totalFails == 0 {
 		return "passing"
 	}
 	if acc.latestPassed {
 		return "latest_passed"
 	}
-	if acc.build > 0 && acc.infra == 0 && acc.test == 0 {
+	if build > 0 && infra == 0 && test == 0 {
 		return "code"
 	}
-	if acc.infra > 0 && acc.build == 0 {
+	if infra > 0 && build == 0 && test == 0 {
 		return "infra"
 	}
-	if acc.infra > acc.build*2 {
+	if infra > (build+test)*2 {
 		return "mostly_infra"
 	}
-	if acc.build > 0 {
+	if build > 0 || (infra > 0 && test > 0) {
 		return "mixed"
 	}
 	return "test_failures"

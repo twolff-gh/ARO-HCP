@@ -496,3 +496,95 @@ func TestExtractTestLinks(t *testing.T) {
 		t.Errorf("second section has no kusto, got %q", rg2.KustoCluster)
 	}
 }
+
+func TestExtractAzureSummary_LROStates(t *testing.T) {
+	input := []byte(`{"time":"2026-04-28T12:11:15Z","level":"INFO","event":"Retry","msg":"response 200"}
+{"time":"2026-04-28T12:11:15Z","level":"INFO","event":"LongRunningOperation","msg":"BEGIN PollUntilDone() for *async.Poller[github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resources/armresources.DeploymentsClientCreateOrUpdateResponse]"}
+{"time":"2026-04-28T12:11:16Z","level":"INFO","event":"LongRunningOperation","msg":"State Accepted"}
+{"time":"2026-04-28T12:11:26Z","level":"INFO","event":"LongRunningOperation","msg":"State Running"}
+{"time":"2026-04-28T12:11:36Z","level":"INFO","event":"LongRunningOperation","msg":"State Succeeded"}
+{"time":"2026-04-28T12:11:36Z","level":"INFO","event":"LongRunningOperation","msg":"END PollUntilDone()"}
+{"time":"2026-04-28T12:12:26Z","level":"INFO","event":"LongRunningOperation","msg":"BEGIN PollUntilDone() for *async.Poller[github.com/Azure/ARO-HCP/test/sdk/resourcemanager/redhatopenshifthcp/armredhatopenshifthcp.HcpOpenShiftClustersClientCreateOrUpdateResponse]"}
+{"time":"2026-04-28T12:12:27Z","level":"INFO","event":"LongRunningOperation","msg":"State Accepted"}
+{"time":"2026-04-28T12:12:37Z","level":"INFO","event":"LongRunningOperation","msg":"State Accepted"}
+{"time":"2026-04-28T12:57:24Z","level":"INFO","event":"LongRunningOperation","msg":"END PollUntilDone()"}
+{"time":"2026-04-28T12:11:11Z","level":"INFO","event":"ResponseError","msg":"ERROR CODE: Conflict"}`)
+
+	summary := extractAzureSummary(input, "test-cluster-create")
+
+	if summary.TotalLines != 11 {
+		t.Errorf("TotalLines = %d, want 11", summary.TotalLines)
+	}
+	if len(summary.ResponseErrors) != 1 || summary.ResponseErrors["Conflict"] != 1 {
+		t.Errorf("ResponseErrors = %v, want {Conflict:1}", summary.ResponseErrors)
+	}
+	if summary.LROStates["Accepted"] != 3 {
+		t.Errorf("LROStates[Accepted] = %d, want 3", summary.LROStates["Accepted"])
+	}
+	if summary.LROStates["Running"] != 1 {
+		t.Errorf("LROStates[Running] = %d, want 1", summary.LROStates["Running"])
+	}
+	if summary.LROStates["Succeeded"] != 1 {
+		t.Errorf("LROStates[Succeeded] = %d, want 1", summary.LROStates["Succeeded"])
+	}
+	if len(summary.LROPollerTypes) != 2 {
+		t.Fatalf("LROPollerTypes len = %d, want 2", len(summary.LROPollerTypes))
+	}
+	if summary.LROPollerTypes[0] != "github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resources/armresources.DeploymentsClientCreateOrUpdateResponse" {
+		t.Errorf("LROPollerTypes[0] = %s", summary.LROPollerTypes[0])
+	}
+	if summary.LROPollerTypes[1] != "github.com/Azure/ARO-HCP/test/sdk/resourcemanager/redhatopenshifthcp/armredhatopenshifthcp.HcpOpenShiftClustersClientCreateOrUpdateResponse" {
+		t.Errorf("LROPollerTypes[1] = %s", summary.LROPollerTypes[1])
+	}
+}
+
+func TestClassifyLRO(t *testing.T) {
+	tests := []struct {
+		desc  string
+		azure []AzureTestSummary
+		want  string
+	}{
+		{
+			"accepted stuck — ClassicStorage pattern",
+			[]AzureTestSummary{
+				{LROStates: map[string]int{"Accepted": 258, "Running": 5, "Succeeded": 2}},
+				{LROStates: map[string]int{"Accepted": 259, "Running": 3, "Succeeded": 2}},
+			},
+			"accepted_stuck",
+		},
+		{
+			"provisioning stuck — PROD/nightly pattern",
+			[]AzureTestSummary{
+				{LROStates: map[string]int{"Accepted": 28, "Provisioning": 232, "Running": 2, "Succeeded": 2}},
+				{LROStates: map[string]int{"Accepted": 27, "Provisioning": 232, "Running": 3, "Succeeded": 2}},
+			},
+			"provisioning_stuck",
+		},
+		{
+			"healthy — normal run",
+			[]AzureTestSummary{
+				{LROStates: map[string]int{"Accepted": 14, "Provisioning": 84, "Running": 4, "Succeeded": 4}},
+			},
+			"",
+		},
+		{
+			"no LRO data",
+			[]AzureTestSummary{
+				{ResponseErrors: map[string]int{"Conflict": 1}},
+			},
+			"",
+		},
+		{
+			"empty",
+			nil,
+			"",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.desc, func(t *testing.T) {
+			if got := classifyLRO(tt.azure); got != tt.want {
+				t.Errorf("classifyLRO() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

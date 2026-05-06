@@ -42,23 +42,52 @@ All output is JSON. GCS artifacts are cached locally — repeat scans are sub-se
 
 ## Workflow
 
-### Phase 1: Gather
+### Phase 1a: Screen
 
-Run survey commands with `--format=compact`. All commands in parallel.
+Run one summary command to get the fleet dashboard (~600 tokens per env):
 
-**periodic scope:**
+**periodic/all scope:**
 ```bash
-/tmp/arohcp-ci-triage survey --format=compact --env=all --days=7
-/tmp/arohcp-ci-triage survey --format=compact --env=int --job=nightly --days=7
-/tmp/arohcp-ci-triage survey --format=compact --env=prod --job=nightly --days=7
+/tmp/arohcp-ci-triage survey --format=summary --env=all --days=7
 ```
 
-**presubmit scope:**
+**presubmit scope** (skip screening — single env, always fetch detail):
 ```bash
 /tmp/arohcp-ci-triage survey --format=compact --env=dev --days=5
 ```
 
-**all scope:** Both periodic + presubmit in parallel.
+### Phase 1b: Classify
+
+Read the summary. Classify each environment using these rules **in order** — first match wins:
+
+1. **NO_DATA**: `data_window.empty` → note and skip
+2. **DEGRADED**: baseline verdict is `"DEGRADED"`, OR `pass_rate < 60%` → fetch compact + nightly
+3. **INTERESTING**: `pass_rate < 80%`, OR any top_signature has a `cross_env` annotation → fetch compact (no nightly)
+4. **GREEN**: none of the above → skip detail, one-line summary in report
+
+If `cross_env_signature_count > 0`, **upgrade every env that contributes to a cross-env signature** to at least INTERESTING (fetch compact even if otherwise GREEN).
+
+### Phase 1c: Fetch detail
+
+Run all commands in parallel:
+
+For each DEGRADED env:
+```bash
+/tmp/arohcp-ci-triage survey --format=compact --env=<env> --days=7
+/tmp/arohcp-ci-triage survey --format=compact --env=<env> --job=nightly --days=7
+```
+
+For each INTERESTING env:
+```bash
+/tmp/arohcp-ci-triage survey --format=compact --env=<env> --days=7
+```
+
+**all scope:** Also run presubmit in parallel with the above:
+```bash
+/tmp/arohcp-ci-triage survey --format=compact --env=dev --days=5
+```
+
+For GREEN envs, include a one-line summary in the report ("INT: 88.6% pass rate, improved from baseline, 3 minor signatures — healthy") without fetching detail.
 
 ### Phase 2: Assess
 
@@ -115,6 +144,93 @@ For each signature, apply diagnostic reasoning:
 
 **Every failure must appear in the report.** Cluster by signature.
 
+### Phase 4: Auto-drill (optional)
+
+If Phase 3 produced findings with clear recommended runs AND the user hasn't asked for a quick/summary-only scan, drill into each finding's recommended run using sub-agents.
+
+**For each finding** that has a recommended run (max 3 findings):
+
+Spawn an Agent() call with this prompt template — all agents run **in parallel** (single message, multiple Agent() tool calls):
+
+```
+You are investigating a specific CI run to confirm or deny a hypothesis from fleet analysis.
+
+## Finding context
+- Title: {finding title}
+- Signature: {signature_key}
+- Hypothesis: {hypothesis}
+- What to look for: {what_to_look_for list}
+- Fleet context: {relevant fleet_context — cross-env, all_hashes_failing, nightly correlation}
+
+## Instructions
+1. Build the tool if needed: go build -o /tmp/arohcp-ci-triage ./tooling/arohcp-ci-triage/
+2. Run: /tmp/arohcp-ci-triage triage {run_id}
+3. Read the triage output and focus on: {what_to_look_for}
+4. Follow this decision tree:
+
+{Insert ONLY the relevant failure mode decision tree from cidig — e.g., Mode A for timeouts, Mode B for Azure errors. ~20 lines, not the full 298-line cidig SKILL.md.}
+
+## Report format (keep it short — under 200 words)
+CONFIRMED: {root cause} — {evidence from triage fields}
+or DENIED: {why hypothesis is wrong} — {actual mechanism found}
+or INCONCLUSIVE: {what's missing} — {suggested next step}
+
+Include: lro_classification, key azure errors, neighbor pass rates, relevant step timings.
+```
+
+**Decision tree snippets to include per failure mode:**
+
+For **timeout** findings (signature contains "timeout", "context deadline exceeded", "exceeded during"):
+```
+1. podinfo.oom_detected? → YES: OOM kill
+2. metrics.max_lease_acq > 300? → YES: Boskos exhaustion
+3. lro_classification?
+   - "accepted_stuck" → CS layer blocked (deny assignment, CS crash)
+   - "provisioning_stuck" → HyperShift/Maestro layer
+   - "" → not enough azure.log data
+4. neighbors.same_hash_passed > 0? → flake. == 0 → consistent failure
+```
+
+For **Azure API error** findings (signature contains "ResponseError", "ResponseFailed", ARM error codes):
+```
+1. azure[].response_errors — read specific error codes
+2. provision (presubmit): same error? → infra setup failure
+3. Common: ResourceNotFound (stale ref), QuotaExceeded (capacity), AuthorizationFailed (RBAC)
+```
+
+For **provision/pipeline step** findings (signature contains "pipeline step", "provision"):
+```
+1. steps[].name + failed=true — which step?
+2. build_log.step_lines — step result message
+3. provision.failures — full ARM error chain
+```
+
+For **other** failure modes: include the generic cidig triage summary — total/failed tests, error_groups, podinfo, events.
+
+**Skip auto-drill when:**
+- All findings are `self_resolved` (no active problem to confirm)
+- The user asked for a quick scan or summary only
+- No findings have recommended runs with sufficient signal
+
+### Phase 5: Synthesize
+
+After sub-agents return, integrate their results into the report:
+
+1. **Update each finding** with the sub-agent verdict:
+   - CONFIRMED → report as confirmed root cause with evidence
+   - DENIED → report what the sub-agent found instead
+   - INCONCLUSIVE → report what further investigation is needed
+
+2. **Cross-finding correlation** — this is the unique value of having all results together:
+   - Do multiple findings share a root cause? ("F1 and F2 both show accepted_stuck → single CS issue")
+   - Does one finding explain another? ("F1's ARM throttling is a downstream effect of F2's CS blockage")
+   - Are any findings independent? ("F3 is a test flake unrelated to F1/F2")
+
+3. **Final report** — merge the Phase 3 report structure with Phase 5 verdicts. Each finding now has:
+   - Fleet-level evidence (from Phase 3: signatures, annotations, deploy correlation)
+   - Run-level evidence (from Phase 4: triage fields, lro_classification, azure errors)
+   - Confirmed/denied/inconclusive status
+
 ## Signal Absence as Evidence
 
 - No `cross_env_signatures` → environment-specific
@@ -123,6 +239,8 @@ For each signature, apply diagnostic reasoning:
 - All envelope patterns show `oom: false` → no memory issues
 - `region_rates` uniform → not region-specific
 - `provision_fail_types` empty → provisioning succeeded, failure in E2E tests
+- `cascade_survivors` non-empty during cascade → coverage shadow: some capabilities work, most don't. Check what the passing tests have in common (e.g., no cluster creation)
+- `never_failing_count` > 0 → some tests always pass, invisible to failure analysis. Note the coverage gap
 
 ## Cross-Run-Type Correlation
 
@@ -131,10 +249,14 @@ For each signature, apply diagnostic reasoning:
 - **Periodic fails, presubmit passes** → environment or deploy issue
 - **Presubmit fails, periodic passes** → PR code issue or ephemeral infra
 - **Nightly fails with different tests** → OCP candidate regression, not ARO
+- **Cascade timeout + `/cidig` shows `lro_classification: accepted_stuck`** → CS layer blocked (deny assignment, CS crash). Check if all EV2 hashes fail — if yes, not a code regression. Check Sippy duration trends for onset timing and rollout gap patterns.
+- **Cascade timeout + `/cidig` shows `lro_classification: provisioning_stuck`** → HyperShift/Maestro layer. Use `/cidig` to check OCP version/channel from test output — if `channel=nightly`, likely OCP nightly build issue (recommend checking if stable tests pass). If stable/candidate, environment-specific HyperShift/Maestro issue.
+- **Nightly failures only in nightly channel, stable passes in same run** → OCP nightly build issue, not infrastructure. Report the specific nightly build version from test output.
 
 ## Command Budget
 
-**periodic:** 3 max. **presubmit:** 1. **all:** 4 max.
+**periodic:** 1 (summary) + up to 3 (env detail) + up to 2 (nightlies) = 6 max. Typical when 1/3 envs degraded: 3.
+**presubmit:** 1. **all:** periodic budget + 1 (presubmit) = 7 max.
 
 ## Data Reference (compact format)
 
@@ -142,12 +264,15 @@ For each signature, apply diagnostic reasoning:
 
 - **status**: `{streak, current_green, pass_rate, total_runs, baseline, failure_stage}`
   - `baseline`: `{pass_rate, total_runs, days, verdict}` — rolling pass rate from runs BEFORE the current window. `verdict` is "DEGRADED" (>15pp drop), "improved" (>15pp gain), or "normal". Use this to distinguish real regressions from normal variance.
-- **data_window**: `{requested_days, actual_days, truncated}`
+- **data_window**: `{requested_days, actual_days, oldest_run, newest_run, truncated, nightly_runs_excluded, run_count_capped}`
 - **daily_rates**: `[{date, pass, total}]`
 - **ev2_coverage**: `{with_ev2, total}`
 - **ev2_hash_rates**: `[{hash, pass, fail, total, pass_rate, is_cron}]`
 - **failure_scale_dist**: `{none, isolated, moderate, cascade}`
 - **region_rates**: `[{region, pass, total, pass_rate, low_sample}]`
+- **test_suite_size**: Count of distinct tests that have ever failed in the window (lower bound on suite size)
+- **never_failing_count**: Tests in the suite that never appear in any failure list (always pass)
+- **cascade_survivors**: `[test_name, ...]` — tests that fail in some cascade runs but not all. During cascade failures these tests intermittently survive, revealing which capabilities still work when cluster creation is broken. Empty when <2 cascade runs.
 - **runs**: Minimal metadata only. `[{id, ts, fail, hash, pr, url}]`
 - **status.failure_stage**: `{provision, e2e, build, other}` — counts of failed runs by stage. Provision=ARM deployment failed before tests. E2E=tests ran but failed. Build=image build failed. Use for the quick "what kind of failure?" answer.
 - **signatures**: `[{key, hit_count, test_count, test_hits:{test_name: count}, first_failure, last_failure, best_run_id, best_run_url, representative_error, annotations[]}]`
@@ -285,3 +410,53 @@ Severity: <30% = Critical, 30-60% = Warning, >60% = OK
 | No failures | Fleet healthy. Report. |
 | EV2 coverage < 50% | Note — deploy correlation unreliable. |
 | `envelope_patterns` empty | Note — GCS artifacts unavailable. |
+
+## Handoff
+
+After producing the report, write a handoff file so subsequent `/cidig` investigations start with fleet context instead of cold:
+
+```bash
+cat > /tmp/ciscan-context.json << 'HANDOFF'
+{json}
+HANDOFF
+```
+
+The JSON structure:
+```json
+{
+  "timestamp": "ISO-8601 of when this scan ran",
+  "scope": "periodic|presubmit|all",
+  "window_days": 7,
+  "environments": {
+    "int": {"status": "degraded|healthy|no_data", "pass_rate": 72.7, "baseline_verdict": "DEGRADED"},
+    "stg": {"status": "healthy", "pass_rate": 95.0, "baseline_verdict": "normal"}
+  },
+  "findings": [
+    {
+      "id": "F1",
+      "title": "one-line finding title",
+      "severity": "P1|P2|P3",
+      "envs": ["int", "stg"],
+      "signature_key": "the normalized signature key",
+      "annotations": ["cascade", "cross_env:2"],
+      "hypothesis": "your hypothesis about root cause",
+      "recommended_runs": [
+        {"id": "run_id_string", "env": "int", "url": "prow_url", "reason": "why this run"}
+      ],
+      "what_to_look_for": ["lro_classification", "azure ResponseErrors", "provision failures"]
+    }
+  ],
+  "fleet_context": {
+    "cross_env_signatures": ["signature keys that appear in 2+ envs"],
+    "all_hashes_failing": {"int": true, "stg": false},
+    "nightly_correlation": "description if nightly shows same pattern, or null"
+  }
+}
+```
+
+**Rules:**
+- One finding per distinct root cause hypothesis (merge related signatures)
+- `recommended_runs`: pick the best run per finding — highest failure count on the most recent hash, or the run with the clearest signal
+- `what_to_look_for`: list the specific triage fields and artifact types that would confirm or deny the hypothesis
+- `hypothesis`: be specific ("CS layer blocked by deny assignment" not "infrastructure issue")
+- Always write the file, even if no findings (empty `findings` array = fleet healthy)

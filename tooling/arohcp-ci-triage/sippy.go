@@ -18,8 +18,7 @@ const (
 	ev2HashAnnotation   = "ev2.rollout/ARO-HCP"
 	ev2RegionAnnotation = "ev2.rollout/region"
 
-	syntheticTestPrefix  = "[sig-sippy]"
-	syntheticTestTimeout = "Job run should complete before timeout"
+	syntheticTestPrefix = "[sig-sippy]"
 )
 
 // envRelease maps environment shorthand to Sippy release name.
