@@ -49,15 +49,36 @@ One call extracts structural signals from ALL artifacts. Returns a JSON object:
 | `neighbors` | Sippy (same-hash runs) | Pass/fail rates, per-test consistency |
 | `provision` | junit_entrypoint.xml | Presubmit only: pipeline step pass/fail |
 | `alerts[]` | alerts.json | Presubmit only: Azure Monitor alerts |
-| `azure[]` | azure.log per test | ResponseError codes per failing test |
+| `azure[]` | azure.log per test | ResponseError codes, `lro_states` (Accepted/Provisioning/Running/Succeeded counts), `lro_poller_types` (which Azure resource) |
+| `lro_classification` | derived from azure[] | `accepted_stuck` (CS blocked), `provisioning_stuck` (HyperShift/Maestro), or empty (healthy/no data) |
 
 ### With context from ciscan
 
-Use the handoff — don't re-run `survey`. The ciscan report already provides:
-- **Signature**: the normalized error pattern this run belongs to
-- **Envelope**: exit_code, oom, error_chain, lease_wait, pod_sched, steps, build_log_errors, alerts, provision_failures
+Check for handoff state before starting the investigation:
 
-Start with `triage <run-id>` only when you need per-test detail beyond what the envelope provides.
+```bash
+cat /tmp/ciscan-context.json 2>/dev/null
+```
+
+**If the file exists and `timestamp` is within the last hour:**
+
+1. **Find the matching finding** — match the run ID against `findings[].recommended_runs[].id`. If matched, you have:
+   - `hypothesis`: what ciscan thinks is wrong — your job is to confirm or deny it
+   - `what_to_look_for`: which triage fields to prioritize
+   - `annotations`: fleet-level structural observations (cascade, cross_env, etc.)
+   - `fleet_context`: cross-env and nightly correlation already computed
+
+2. **Skip redundant work:**
+   - If `fleet_context.all_hashes_failing[env]` is true → note "not deploy-correlated" without re-verifying via neighbors
+   - If `fleet_context.cross_env_signatures` contains this run's error → note "fleet-wide" and focus on mechanism
+   - If `fleet_context.nightly_correlation` is set → factor into root cause assessment
+   - If the finding has `annotations` including `cascade` → expect >15 failures, skip counting
+
+3. **Test the hypothesis** — run `triage <run-id>` and follow the decision tree for the failure mode suggested by the hypothesis, not the generic flow. Report as CONFIRMED, DENIED, or INCONCLUSIVE with evidence.
+
+4. **Reference the finding ID** (e.g., "F1") in your output for traceability back to the ciscan report.
+
+**If the file is missing, stale, or the run ID isn't in any finding** — proceed with normal cold-start investigation below.
 
 ### Cold start with test name (no run ID)
 
@@ -77,11 +98,37 @@ Read the triage output. Classify the failure mode, then follow the appropriate t
    └─ provision step?           → YES: Infra provisioning timeout.
    └─ test step at full timeout? → Continue to 5.
 5. azure[] has ResponseErrors?  → YES: Azure API issue. Follow Mode B.
-                                → NO:  Client-side timeout. Platform issue.
+                                → NO: Continue to 5a.
+5a. lro_classification field?
+   └─ "accepted_stuck"          → CS layer blocked. Cluster creation PUT was accepted
+                                  by ARM but CS never started provisioning. Root cause
+                                  is in CS (deny assignment failure, CS crash, config error).
+                                  Cross-ref EV2 hash rates: all hashes failing = not code.
+                                  Check Sippy duration trends for onset timing.
+   └─ "provisioning_stuck"     → HyperShift/Maestro layer. CS started provisioning
+                                  but cluster never became Ready. Check:
+                                  - azure[].lro_states: high Provisioning count confirms stall
+                                  - Test output for ocp_version/ocp_channel: if channel is
+                                    "nightly", likely OCP nightly build issue (check if stable
+                                    channel tests pass in the same or concurrent runs).
+                                    If channel is "stable" or "candidate", environment-specific
+                                    HyperShift/Maestro issue.
+                                  - For presubmit: check provision failures for HyperShift
+                                    Operator deployment state.
+   └─ "" (empty)               → Not enough azure.log data. Fall back to:
+                                  neighbors.same_hash_passed? >0: flake. 0: consistent.
 6. neighbors.same_hash_passed?  → >0: Intermittent (flake). 0: Consistent.
 ```
 
-Timeout with no infra signals and no Azure errors = cluster creation taking too long = problem is BETWEEN Azure API and cluster readiness (EventGrid, Maestro, HyperShift). This is the most common failure mode and the hardest to diagnose from CI artifacts alone.
+**LRO sub-classification** is the strongest diagnostic signal for cluster creation timeouts. The `azure[]` array now includes `lro_states` (map of state→count) and `lro_poller_types` (which Azure resource each LRO operates on). Key patterns:
+
+| lro_classification | LRO Pattern | Root Cause Layer |
+|-------------------|------------|-----------------|
+| `accepted_stuck` | Accepted=258, Provisioning=0 | CS layer (deny assignment, crash, ARM rejection) |
+| `provisioning_stuck` | Accepted=28, Provisioning=232 | HyperShift/Maestro/mgmt cluster |
+| (empty, healthy) | Accepted=14, Provisioning=84, Succeeded=4 | Normal lifecycle |
+
+For cascade runs (>15 failures), azure.log is sampled from the first 3 failing tests. The `lro_classification` is derived from these samples.
 
 ### Mode B: Azure API Error (azure field has ResponseErrors)
 
