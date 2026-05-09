@@ -447,6 +447,8 @@ func preserveUnknownClusterFields(from, to *api.HCPOpenShiftCluster) {
 		}
 		to.CustomerProperties.Etcd.DataEncryption.CustomerManaged.Kms.Visibility = from.CustomerProperties.Etcd.DataEncryption.CustomerManaged.Kms.Visibility
 	}
+	// AcrPullIdentity was added in v2025_12_23_preview.
+	to.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.AcrPullIdentity = from.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.AcrPullIdentity
 }
 
 func normalizeManagedIdentity(identity *generated.ManagedServiceIdentity) *arm.ManagedServiceIdentity {

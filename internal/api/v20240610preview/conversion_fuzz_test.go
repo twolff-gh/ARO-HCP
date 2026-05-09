@@ -94,6 +94,11 @@ func TestRoundTripInternalExternalInternal(t *testing.T) {
 			// VnetIntegrationSubnetID was added in v2025_12_23_preview and does not exist in v2024_06_10_preview
 			j.VnetIntegrationSubnetID = nil
 		},
+		func(j *api.UserAssignedIdentitiesProfile, c randfill.Continue) {
+			c.FillNoCustom(j)
+			// AcrPullIdentity was added in v2025_12_23_preview and does not exist in v2024_06_10_preview
+			j.AcrPullIdentity = nil
+		},
 		func(j *api.KmsEncryptionProfile, c randfill.Continue) {
 			c.FillNoCustom(j)
 			// Visibility was added in v2025_12_23_preview and does not exist in v2024_06_10_preview
