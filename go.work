@@ -25,4 +25,5 @@ use (
 	./tooling/templatize
 	./tooling/tenant-quota
 	./tooling/yamlwrap
+	./tooling/cisignal
 )

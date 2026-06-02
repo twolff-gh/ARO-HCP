@@ -34,4 +34,6 @@ report.json
 _artifacts
 must-gather-*
 /hcpctl
+/cisignal
 timing-metadata-*
+tooling/cisignal/cisignal
