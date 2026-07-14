@@ -332,6 +332,10 @@ func DeleteAllHCPClusters(
 			return fmt.Errorf("failed listing hcp clusters in resourcegroup=%q: %w", resourceGroupName, err)
 		}
 		for _, cluster := range page.Value {
+			if cluster.Properties != nil && cluster.Properties.ProvisioningState != nil &&
+				*cluster.Properties.ProvisioningState == hcpsdk20240610preview.ProvisioningStateDeleting {
+				continue
+			}
 			hcpClusterNames = append(hcpClusterNames, *cluster.Name)
 			if value, set := cluster.Tags[api.TagClusterSizeOverride]; !set || value == nil || *value != string(api.MinimalControlPlanePodSizing) {
 				hcpClustersWithoutSizeTag = append(hcpClustersWithoutSizeTag, *cluster.Name)
@@ -341,6 +345,7 @@ func DeleteAllHCPClusters(
 
 	// deletion takes a while, it's worth it to do this in parallel
 	waitGroup, ctx := errgroup.WithContext(ctx)
+	waitGroup.SetLimit(3)
 	for _, hcpClusterName := range hcpClusterNames {
 		waitGroup.Go(func() error {
 			// prevent a stray panic from exiting the process. Don't do this generally because ginkgo/gomega rely on panics to function.
