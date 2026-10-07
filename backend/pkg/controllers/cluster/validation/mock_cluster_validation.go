@@ -77,3 +77,29 @@ func (m *MockClusterValidation) Name() string { return m.validationName }
 func (m *MockClusterValidation) Validate(_ context.Context, _ *coreapi.Subscription, _ *coreapi.Cluster) validationutils.ValidationResult {
 	return m.result
 }
+
+// MockClusterValidationWithInputs wraps a MockClusterValidation to additionally implement
+// validationutils.ClusterValidationInputs, for testing the opt-in re-validation path. Configure
+// the wrapped MockClusterValidation's result (WithPassed, WithFailed, ...) through the embedded
+// field or its returned pointer; use the MockClusterValidationWithInputs value itself as the
+// validationutils.ClusterValidation passed to the syncer so both interfaces are visible.
+type MockClusterValidationWithInputs struct {
+	*MockClusterValidation
+	inputsFn func(cluster *coreapi.Cluster) []string
+}
+
+var _ validationutils.ClusterValidation = (*MockClusterValidationWithInputs)(nil)
+var _ validationutils.ClusterValidationInputs = (*MockClusterValidationWithInputs)(nil)
+
+// NewMockClusterValidationWithInputs creates a mock validation that declares inputsFn as its
+// validationutils.ClusterValidationInputs.
+func NewMockClusterValidationWithInputs(name string, inputsFn func(cluster *coreapi.Cluster) []string) *MockClusterValidationWithInputs {
+	return &MockClusterValidationWithInputs{
+		MockClusterValidation: NewMockClusterValidation(name),
+		inputsFn:              inputsFn,
+	}
+}
+
+func (m *MockClusterValidationWithInputs) ValidationInputs(cluster *coreapi.Cluster) []string {
+	return m.inputsFn(cluster)
+}

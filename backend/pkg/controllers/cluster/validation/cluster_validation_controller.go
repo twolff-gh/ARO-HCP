@@ -16,6 +16,8 @@ package validation
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"time"
 
@@ -26,6 +28,7 @@ import (
 
 	"github.com/Azure/ARO-HCP/backend/pkg/utils/controllerutils"
 	"github.com/Azure/ARO-HCP/backend/pkg/utils/validationutils"
+	"github.com/Azure/ARO-HCP/internal/api/coreapi"
 	controllerutil "github.com/Azure/ARO-HCP/internal/controllerutils"
 	"github.com/Azure/ARO-HCP/internal/database/cosmosstorage/corecosmosstorage"
 	"github.com/Azure/ARO-HCP/internal/database/cosmosstorage/cosmosstorageutils"
@@ -44,6 +47,9 @@ const (
 	ClusterValidationAlwaysSuccessValidationControllerName                              = "ClusterValidationAlwaysSuccessValidation"
 	// consecutiveUnknownCountsCacheCapacity bounds the size of the consecutiveUnknownCounts LRU cache.
 	consecutiveUnknownCountsCacheCapacity = 50000
+
+	// lastValidatedInputsDigestCacheCapacity bounds the size of the lastValidatedInputsDigest LRU cache.
+	lastValidatedInputsDigestCacheCapacity = 50000
 
 	// maxConsecutiveUnknownsBeforeWrite bounds how many consecutive Unknown validation results are
 	// suppressed (i.e. the previously stored condition is kept as-is) before an Unknown condition is
@@ -74,6 +80,21 @@ type clusterValidationSyncer struct {
 	// policy in trackConsecutiveUnknowns, which avoids flapping a cluster's validation status
 	// to Unknown on a transient blip.
 	consecutiveUnknownCounts *lru.Cache
+
+	// clusterLister reads the Cluster from the informer cache to evaluate the validation's
+	// declared inputs without a Cosmos read on every sync. Nil when the validation does not
+	// implement validationutils.ClusterValidationInputs, since nothing then reads it.
+	clusterLister corelisters.ClusterLister
+
+	// lastValidatedInputsDigest records, per HCPClusterKey, the digest of the validation's
+	// declared inputs as of the last completed run. A mismatch against the current digest is
+	// what lets a customer-initiated edit bypass the retryCooldownChecker. Nil when the
+	// validation does not implement validationutils.ClusterValidationInputs.
+	//
+	// Like retryCooldownChecker this is in-memory and deliberately not persisted: losing it
+	// costs at most one extra run of a read-only check, which is cheaper than the Cosmos write
+	// and API surface that persisting it would require.
+	lastValidatedInputsDigest *lru.Cache
 }
 
 var _ controllerutils.ClusterSyncer = (*clusterValidationSyncer)(nil)
@@ -104,6 +125,13 @@ func NewNamedClusterValidationController(
 		consecutiveUnknownCounts:     lru.New(consecutiveUnknownCountsCacheCapacity),
 	}
 
+	// Only validations that declare their customer-controlled inputs opt into bypassing the
+	// cooldown on change, so only they need the cluster cache and digest bookkeeping.
+	if _, ok := validation.(validationutils.ClusterValidationInputs); ok {
+		_, syncer.clusterLister = informers.Clusters()
+		syncer.lastValidatedInputsDigest = lru.New(lastValidatedInputsDigestCacheCapacity)
+	}
+
 	controller := controllerutils.NewClusterWatchingController(
 		name,
 		resourcesDBClient,
@@ -129,7 +157,10 @@ func (c *clusterValidationSyncer) SyncOnce(ctx context.Context, key controllerut
 
 	// Skip processing if the key is still within its cooldown window from a previous validation. All outcomes can schedule a cooldown via
 	// EarliestRetryAfter so validations run continuously without racing. Re-enqueue so the item is revisited once the cooldown expires.
-	if !c.retryCooldownChecker.CanSync(ctx, key) {
+	//
+	// A validation that declares its customer-controlled inputs is exempt from the cooldown once those inputs change, so a customer edit is
+	// re-validated promptly rather than after the 12h passed-outcome cooldown.
+	if !c.retryCooldownChecker.CanSync(ctx, key) && !c.declaredInputsChanged(ctx, key) {
 		if c.enqueueAfter != nil {
 			// Add a one-second buffer so the requeue lands strictly after the cooldown expires, avoiding a race where the item fires just before CanSync flips to true.
 			c.enqueueAfter.EnqueueAfter(key, c.retryCooldownChecker.TimeUntilReady(key)+time.Second)
@@ -167,6 +198,11 @@ func (c *clusterValidationSyncer) SyncOnce(ctx context.Context, key controllerut
 	if err := result.Validate(); err != nil {
 		return utils.TrackError(fmt.Errorf("validation %s returned invalid ValidationResult: %w", c.validation.Name(), err))
 	}
+
+	// Record what was just validated, for every outcome and not only Passed. Leaving a stale digest behind after a Failed or Unknown run would
+	// keep declaredInputsChanged true on every subsequent sync, which would bypass the cooldown indefinitely and hammer the external APIs the
+	// validation calls.
+	c.recordValidatedInputs(key, existingCluster)
 
 	if result.Outcome.Type != validationutils.OutcomeTypePassed {
 		logger.Info("Validation outcome", "validation", c.validation.Name(), "result", result)
@@ -210,6 +246,55 @@ func (c *clusterValidationSyncer) SyncOnce(ctx context.Context, key controllerut
 	}
 
 	return nil
+}
+
+// declaredInputsChanged reports whether the customer-controlled inputs this validation depends on
+// differ from those captured at its last completed run, which is the signal that a customer edit
+// warrants re-validating ahead of the cooldown.
+//
+// It is false whenever the question cannot be answered affirmatively: the validation does not
+// declare inputs, the cluster is not in the informer cache yet, or no prior run was recorded for
+// this key. Falling back to false leaves the existing cooldown in charge, which is the safe
+// direction; the worst case is that re-validation waits for the cooldown to expire as it does today.
+func (c *clusterValidationSyncer) declaredInputsChanged(ctx context.Context, key controllerutils.HCPClusterKey) bool {
+	inputs, ok := c.validation.(validationutils.ClusterValidationInputs)
+	if !ok {
+		return false
+	}
+
+	cluster, err := c.clusterLister.Get(ctx, key.SubscriptionID, key.ResourceGroupName, key.HCPClusterName)
+	if err != nil {
+		return false
+	}
+
+	previousDigest, seen := c.lastValidatedInputsDigest.Get(key)
+	if !seen {
+		return false
+	}
+
+	return previousDigest.(string) != digestValidationInputs(inputs.ValidationInputs(cluster))
+}
+
+// recordValidatedInputs captures the digest of the inputs the validation just ran against. It is a
+// no-op for validations that do not declare inputs.
+func (c *clusterValidationSyncer) recordValidatedInputs(key controllerutils.HCPClusterKey, cluster *coreapi.Cluster) {
+	inputs, ok := c.validation.(validationutils.ClusterValidationInputs)
+	if !ok {
+		return
+	}
+
+	c.lastValidatedInputsDigest.Add(key, digestValidationInputs(inputs.ValidationInputs(cluster)))
+}
+
+// digestValidationInputs reduces declared validation inputs to a comparable fixed-size string.
+// Values are length-prefixed so that differing splits of the same concatenation, such as
+// ["ab", "c"] and ["a", "bc"], do not collide.
+func digestValidationInputs(inputs []string) string {
+	hash := sha256.New()
+	for _, input := range inputs {
+		fmt.Fprintf(hash, "%d:%s", len(input), input)
+	}
+	return hex.EncodeToString(hash.Sum(nil))
 }
 
 // handleRequeue sets the earliest-retry gate and, for Failed/Unknown outcomes, schedules a

@@ -27,3 +27,27 @@ type ClusterValidation interface {
 	// Validate validates the Cluster and returns a ValidationResult describing the outcome.
 	Validate(ctx context.Context, clusterSubscription *coreapi.Subscription, cluster *coreapi.Cluster) ValidationResult
 }
+
+// ClusterValidationInputs is an optional interface a ClusterValidation may implement to opt
+// into re-validation on customer-initiated change.
+//
+// A passed validation is held off by its EarliestRetryAfter cooldown, which PassedValidation
+// defaults to 12 hours. A customer who edits a validated field would otherwise wait out that
+// cooldown before learning the edit broke something. When a validation implements this
+// interface, the controller bypasses the cooldown as soon as the declared inputs change, so the
+// edit is re-validated promptly. Validations that do not implement it keep the cooldown-only
+// behaviour and are unaffected.
+//
+// Implementing this interface IS the opt-in; there is no separate registry or enablement flag.
+type ClusterValidationInputs interface {
+	// ValidationInputs returns the customer-controlled values this validation depends on.
+	//
+	// Only customer-controlled values belong here. Listing a field that backend controllers
+	// write would make the validation re-run on internal state churn rather than on customer
+	// intent, which is explicitly not what this mechanism is for.
+	//
+	// The returned values must be stable across calls for an unchanged cluster, must not
+	// contain secrets, and must tolerate a partially-populated cluster: this is called on
+	// every sync, including before other controllers have filled in their fields.
+	ValidationInputs(cluster *coreapi.Cluster) []string
+}

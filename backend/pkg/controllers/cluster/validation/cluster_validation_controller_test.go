@@ -115,6 +115,12 @@ func newTestSyncer(mockDB *corecosmosstoragetesting.MockResourcesDBClient, valid
 		validation:                   validation,
 		consecutiveUnknownCounts:     lru.New(consecutiveUnknownCountsCacheCapacity),
 	}
+	// Mirrors the opt-in wiring in NewNamedClusterValidationController: only validations that
+	// declare inputs need the cluster cache and digest bookkeeping.
+	if _, ok := validation.(validationutils.ClusterValidationInputs); ok {
+		syncer.clusterLister = &corelistertesting.DBClusterLister{ResourcesDBClient: mockDB}
+		syncer.lastValidatedInputsDigest = lru.New(lastValidatedInputsDigestCacheCapacity)
+	}
 	return syncer, enqueuer
 }
 
@@ -536,6 +542,150 @@ func TestClusterValidationSyncer_ConsecutiveUnknownSuppression(t *testing.T) {
 	assert.Equal(t, metav1.ConditionUnknown, cond.Status)
 	assert.Equal(t, "InternalError", cond.Reason)
 	assert.NotEqual(t, before.CosmosETag, after.CosmosETag, "expected a Cosmos write once the suppression threshold was exceeded")
+}
+
+// TestClusterValidationSyncer_DeclaredInputsBypassCooldown covers the ARO-29876 selective
+// validation mechanism end-to-end: a validation that implements validationutils.ClusterValidationInputs
+// is re-run as soon as its declared inputs change on the Cluster, even while the cooldown from its
+// last Passed run is still active; a validation that does not implement the interface keeps today's
+// cooldown-only behavior (covered separately by TestClusterValidationSyncer_CooldownSuppression).
+func TestClusterValidationSyncer_DeclaredInputsBypassCooldown(t *testing.T) {
+	ctx := utils.ContextWithLogger(context.Background(), testr.New(t))
+
+	mockDB := corecosmosstoragetesting.NewMockResourcesDBClient()
+	cluster := newTestCluster(t)
+	cluster.CustomerProperties.DNS.BaseDomainPrefix = "initial"
+	_, err := mockDB.HCPClusters(testSubscriptionID, testResourceGroup).Create(ctx, cluster, nil)
+	require.NoError(t, err)
+	_, err = mockDB.Subscriptions().Create(ctx, newTestSubscription(), nil)
+	require.NoError(t, err)
+	_, err = corecosmosstorage.GetOrCreateServiceProviderCluster(ctx, mockDB, cluster.ID)
+	require.NoError(t, err)
+
+	validation := NewMockClusterValidationWithInputs(testValidationName, func(c *coreapi.Cluster) []string {
+		return []string{c.CustomerProperties.DNS.BaseDomainPrefix}
+	})
+	validation.WithPassed()
+
+	fakeClock := clocktesting.NewFakePassiveClock(fixedNow)
+	syncer, _ := newTestSyncer(mockDB, validation, fakeClock)
+
+	key := newTestClusterKey()
+
+	// First run: no prior digest recorded, so declaredInputsChanged is false and the cooldown
+	// gate applies normally. The run proceeds because there's no cooldown active yet.
+	require.NoError(t, syncer.SyncOnce(ctx, key))
+	spc, err := mockDB.ServiceProviderClusters(testSubscriptionID, testResourceGroup, testClusterName).
+		Get(ctx, coreapi.ServiceProviderClusterResourceName)
+	require.NoError(t, err)
+	cond := meta.FindStatusCondition(spc.Status.Validations, testValidationName)
+	require.NotNil(t, cond)
+	firstTransition := cond.LastTransitionTime
+
+	// Simulate the Passed outcome's 12h-class cooldown still being active, as it would be
+	// moments after the first run.
+	syncer.retryCooldownChecker.SetCooldown(key, 12*time.Hour)
+
+	// Unchanged inputs: cooldown wins, SyncOnce is a no-op and re-enqueues for later.
+	require.NoError(t, syncer.SyncOnce(ctx, key))
+	spc, err = mockDB.ServiceProviderClusters(testSubscriptionID, testResourceGroup, testClusterName).
+		Get(ctx, coreapi.ServiceProviderClusterResourceName)
+	require.NoError(t, err)
+	cond = meta.FindStatusCondition(spc.Status.Validations, testValidationName)
+	require.NotNil(t, cond)
+	assert.Equal(t, firstTransition, cond.LastTransitionTime, "unchanged inputs should not trigger a re-run while cooldown is active")
+
+	// Customer edits the declared input (e.g. a PATCH changing baseDomainPrefix). The validation
+	// now fails for the new value; declaredInputsChanged must bypass the still-active cooldown so
+	// the customer sees this promptly rather than after the 12h backoff.
+	storedCluster, err := mockDB.HCPClusters(testSubscriptionID, testResourceGroup).Get(ctx, testClusterName)
+	require.NoError(t, err)
+	storedCluster.CustomerProperties.DNS.BaseDomainPrefix = "changed"
+	_, err = mockDB.HCPClusters(testSubscriptionID, testResourceGroup).Replace(ctx, storedCluster, nil)
+	require.NoError(t, err)
+	validation.WithFailed("InvalidDomain", "invalid domain", "The new base domain prefix is invalid.")
+
+	require.NoError(t, syncer.SyncOnce(ctx, key))
+	spc, err = mockDB.ServiceProviderClusters(testSubscriptionID, testResourceGroup, testClusterName).
+		Get(ctx, coreapi.ServiceProviderClusterResourceName)
+	require.NoError(t, err)
+	cond = meta.FindStatusCondition(spc.Status.Validations, testValidationName)
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionFalse, cond.Status, "changed declared inputs should bypass the cooldown and re-run the validation")
+	assert.Equal(t, "InvalidDomain", cond.Reason)
+}
+
+// TestClusterValidationSyncer_DeclaredInputsChanged unit-tests declaredInputsChanged in isolation
+// from SyncOnce, covering its fallback-to-false cases: a validation that doesn't implement
+// validationutils.ClusterValidationInputs, and no prior digest recorded for the key yet.
+func TestClusterValidationSyncer_DeclaredInputsChanged(t *testing.T) {
+	ctx := utils.ContextWithLogger(context.Background(), testr.New(t))
+	key := newTestClusterKey()
+
+	t.Run("validation does not implement ClusterValidationInputs -- false", func(t *testing.T) {
+		mockDB := corecosmosstoragetesting.NewMockResourcesDBClient()
+		syncer, _ := newTestSyncer(mockDB, NewMockClusterValidation(testValidationName), clocktesting.NewFakePassiveClock(fixedNow))
+		assert.False(t, syncer.declaredInputsChanged(ctx, key))
+	})
+
+	t.Run("no prior digest recorded -- false", func(t *testing.T) {
+		mockDB := corecosmosstoragetesting.NewMockResourcesDBClient()
+		cluster := newTestCluster(t)
+		_, err := mockDB.HCPClusters(testSubscriptionID, testResourceGroup).Create(ctx, cluster, nil)
+		require.NoError(t, err)
+
+		validation := NewMockClusterValidationWithInputs(testValidationName, func(c *coreapi.Cluster) []string {
+			return []string{c.CustomerProperties.DNS.BaseDomainPrefix}
+		})
+		syncer, _ := newTestSyncer(mockDB, validation, clocktesting.NewFakePassiveClock(fixedNow))
+		assert.False(t, syncer.declaredInputsChanged(ctx, key))
+	})
+
+	t.Run("prior digest matches current inputs -- false", func(t *testing.T) {
+		mockDB := corecosmosstoragetesting.NewMockResourcesDBClient()
+		cluster := newTestCluster(t)
+		cluster.CustomerProperties.DNS.BaseDomainPrefix = "stable"
+		_, err := mockDB.HCPClusters(testSubscriptionID, testResourceGroup).Create(ctx, cluster, nil)
+		require.NoError(t, err)
+
+		validation := NewMockClusterValidationWithInputs(testValidationName, func(c *coreapi.Cluster) []string {
+			return []string{c.CustomerProperties.DNS.BaseDomainPrefix}
+		})
+		syncer, _ := newTestSyncer(mockDB, validation, clocktesting.NewFakePassiveClock(fixedNow))
+		syncer.recordValidatedInputs(key, cluster)
+		assert.False(t, syncer.declaredInputsChanged(ctx, key))
+	})
+
+	t.Run("prior digest differs from current inputs -- true", func(t *testing.T) {
+		mockDB := corecosmosstoragetesting.NewMockResourcesDBClient()
+		cluster := newTestCluster(t)
+		cluster.CustomerProperties.DNS.BaseDomainPrefix = "before"
+		_, err := mockDB.HCPClusters(testSubscriptionID, testResourceGroup).Create(ctx, cluster, nil)
+		require.NoError(t, err)
+
+		validation := NewMockClusterValidationWithInputs(testValidationName, func(c *coreapi.Cluster) []string {
+			return []string{c.CustomerProperties.DNS.BaseDomainPrefix}
+		})
+		syncer, _ := newTestSyncer(mockDB, validation, clocktesting.NewFakePassiveClock(fixedNow))
+		syncer.recordValidatedInputs(key, cluster)
+
+		storedCluster, err := mockDB.HCPClusters(testSubscriptionID, testResourceGroup).Get(ctx, testClusterName)
+		require.NoError(t, err)
+		storedCluster.CustomerProperties.DNS.BaseDomainPrefix = "after"
+		_, err = mockDB.HCPClusters(testSubscriptionID, testResourceGroup).Replace(ctx, storedCluster, nil)
+		require.NoError(t, err)
+
+		assert.True(t, syncer.declaredInputsChanged(ctx, key))
+	})
+}
+
+// TestDigestValidationInputs locks two properties the cooldown-bypass decision depends on:
+// stability for identical inputs, and no collision between differing splits of the same
+// concatenation (length-prefixing must prevent ["ab","c"] and ["a","bc"] from hashing equal).
+func TestDigestValidationInputs(t *testing.T) {
+	assert.Equal(t, digestValidationInputs([]string{"a", "b"}), digestValidationInputs([]string{"a", "b"}), "identical inputs must digest identically")
+	assert.NotEqual(t, digestValidationInputs([]string{"ab", "c"}), digestValidationInputs([]string{"a", "bc"}), "differing splits of the same concatenation must not collide")
+	assert.NotEqual(t, digestValidationInputs([]string{"a"}), digestValidationInputs([]string{"b"}), "different inputs must digest differently")
 }
 
 // TestClusterValidationSyncer_CooldownSuppression verifies that when the
